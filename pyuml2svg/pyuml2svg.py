@@ -437,7 +437,7 @@ def render_svg_string(
         )
 
         cx = x + w/2
-        cy = y + 10 + line_height
+        cy = y + 2 + line_height
 
         parts.append(
             f'<text x="{cx}" y="{cy}" text-anchor="middle" '
