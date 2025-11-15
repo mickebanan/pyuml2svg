@@ -8,14 +8,7 @@ Features:
       ('+ id: UUID', {'color': '#880000', 'weight': 'bold'})
 - Grey edges + grey labels with hover effect (label only).
 - Multiplicity labels.
-- Simple perpendicular label offset.
 - Default box fill = light grey (#f5f5f5) unless overridden.
-- All strings use single quotes unless another quote is required.
-- Pure Python, no dependencies.
-
-Now improved:
-- render_svg_string(): return SVG as a web-app-friendly string
-- render_svg(): optional file-writing wrapper for CLI use
 """
 
 from dataclasses import dataclass, field
@@ -213,7 +206,6 @@ def _layout_tree(
 def _connected_components(classes, relations):
     """
     Returns a list of connected components, each a set of class names.
-    Graph is treated as UNDIRECTED for connectivity purposes.
     """
     # Build undirected adjacency
     adj = {c.name: set() for c in classes}
@@ -229,11 +221,9 @@ def _connected_components(classes, relations):
     for node in adj:
         if node in visited:
             continue
-
         stack = [node]
-        comp = set([node])
+        comp = {node}
         visited.add(node)
-
         while stack:
             cur = stack.pop()
             for nxt in adj[cur]:
@@ -241,9 +231,7 @@ def _connected_components(classes, relations):
                     visited.add(nxt)
                     comp.add(nxt)
                     stack.append(nxt)
-
         components.append(comp)
-
     return components
 
 
@@ -273,10 +261,11 @@ def render_svg_string(
     horizontal_spacing=60,
     margin=40,
 ) -> str:
-    '''
-    Returns the SVG as a *string* (no file I/O).
-    Use this inside web applications or other Python code.
-    '''
+    """
+    Returns the SVG described by the classes and relations as a string.
+
+    Use inside web applications or other Python code.
+    """
     if line_height is None:
         line_height = int(font_size * 1.4)
 
@@ -376,7 +365,6 @@ def render_svg_string(
                 f'<path class="edge-line" d="{d}" fill="none" '
                 f'marker-end="url(#arrow)" />'
             )
-
         # Edge labels
         if r.label:
             mx = (x1 + x2) / 2
@@ -389,27 +377,23 @@ def render_svg_string(
             offset = 10
             lx = mx + px * offset
             ly = my + py * offset
-
             parts.append(
                 f'<text class="edge-label" x="{lx}" y="{ly}" '
                 f'text-anchor="middle" font-size="{font_size - 2}">'
                 f'{html.escape(r.label)}</text>'
             )
-
         if r.source_multiplicity:
             parts.append(
                 f'<text class="edge-label" x="{x1}" y="{y1 + 15}" '
                 f'text-anchor="middle" font-size="{font_size - 2}">'
                 f'{html.escape(r.source_multiplicity)}</text>'
             )
-
         if r.target_multiplicity:
             parts.append(
                 f'<text class="edge-label" x="{x2}" y="{y2 - 5}" '
                 f'text-anchor="middle" font-size="{font_size - 2}">'
                 f'{html.escape(r.target_multiplicity)}</text>'
             )
-
         parts.append('</g>')
 
     # -----------------------
@@ -520,10 +504,10 @@ def render_svg(
     filename: str,
     **kwargs,
 ):
-    '''
+    """
     Writes SVG to a file. Wrapper around render_svg_string().
     Kept for script/CLI compatibility.
-    '''
+    """
     svg = render_svg_string(classes, relations, **kwargs)
 
     with open(filename, 'w', encoding='utf-8') as f:
