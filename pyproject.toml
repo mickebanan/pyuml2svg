@@ -1,24 +1,29 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "pyuml2svg"
-version = "1.0.0"
-description = "Pure-Python UML class diagram renderer producing SVG"
-authors = [
-    { name="Your Name", email="you@example.com" }
-]
+version = "0.1.0"
+description = "Pure Python UML class diagram generator that renders SVG without dependencies."
 readme = "README.md"
-license = { text = "MIT" }
 requires-python = ">=3.8"
-keywords = ["uml", "diagram", "svg", "visualization", "uml diagrams"]
+license = { file = "LICENSE" }
+authors = [
+    { name = "Mikael Mölsä", email = "mikael.molsa@pm.me" }
+]
+
+keywords = ["uml", "svg", "diagram", "python-uml", "uml-renderer"]
+
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    "Environment :: Console",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Multimedia :: Graphics",
 ]
 
-[project.urls]
-Homepage = "https://example.com"
-Source = "https://example.com/repo"
+dependencies = []
+
+[project.scripts]
+pyuml2svg = "cli:main"  # gives the PyPI-installed CLI
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
