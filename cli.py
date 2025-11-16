@@ -56,40 +56,15 @@ def load_spec(path: Path):
 # Main CLI entry point
 # ------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(
-        description='Generate an SVG UML class diagram from a JSON definition.'
-    )
-
-    parser.add_argument(
-        'input',
-        help='Input JSON file describing UML classes and relations.'
-    )
-
-    parser.add_argument(
-        '-o', '--output',
-        help='Output SVG file (default: stdout).'
-    )
-
-    parser.add_argument(
-        '--font-size', type=int, default=14,
-        help='Base font size used in the diagram.'
-    )
-
-    parser.add_argument(
-        '--vertical-spacing', type=int, default=80,
-        help='Vertical spacing between classes.'
-    )
-
-    parser.add_argument(
-        '--horizontal-spacing', type=int, default=60,
-        help='Horizontal spacing between classes.'
-    )
-
-    parser.add_argument(
-        '--margin', type=int, default=40,
-        help='Outer margin around the diagram.'
-    )
-
+    parser = argparse.ArgumentParser(description='Generate an SVG UML class diagram from a JSON definition.')
+    parser.add_argument('input', help='Input JSON file describing UML classes and relations.')
+    parser.add_argument('-o', '--output', help='Output SVG file (default: stdout).')
+    parser.add_argument('--font-size', type=int, default=14, help='Base font size used in the diagram.')
+    parser.add_argument('--vertical-spacing', type=int, default=80,
+                        help='Vertical spacing between classes.')
+    parser.add_argument('--horizontal-spacing', type=int, default=60,
+                        help='Horizontal spacing between classes.')
+    parser.add_argument('--margin', type=int, default=40, help='Outer margin around the diagram.')
     args = parser.parse_args()
 
     # Load UML spec
