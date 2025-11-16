@@ -731,7 +731,6 @@ def render_svg_string(
 
       .edge-group:hover .edge-label {
         fill:#000;
-        font-weight:bold;
       }
 
       .edge-group:hover .edge-line {
