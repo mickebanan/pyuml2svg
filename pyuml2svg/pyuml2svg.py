@@ -95,6 +95,38 @@ def _compute_box_size(cls, font_size, char_width, line_height):
     }
 
 
+def _compute_exit_x(sx, sw, idx, N):
+    """
+    Compute the horizontal exit coordinate for child idx among N children,
+    using the unified exit region:
+      - left side's lower half
+      - entire bottom edge
+      - right side's lower half
+    (only X coordinate is needed for layout).
+    """
+    left_x  = sx
+    right_x = sx + sw
+
+    t = (idx + 0.5) / N  # in [0,1]
+
+    if t < 0.25:
+        # left side (x fixed at left_x)
+        x = left_x
+    elif t < 0.50:
+        # bottom-left → bottom-center
+        local = (t - 0.25) / 0.25
+        x = left_x + (sw * 0.5) * local
+    elif t < 0.75:
+        # bottom-center → bottom-right
+        local = (t - 0.50) / 0.25
+        x = left_x + sw * 0.5 + (sw * 0.5) * local
+    else:
+        # right side (x fixed at right_x)
+        x = right_x
+
+    return x
+
+
 def _build_graph(classes, relations):
     children = {c.name: [] for c in classes}
     parents  = {c.name: [] for c in classes}
@@ -217,7 +249,9 @@ def _layout_tree(
     # --------------------------------------------------
     def layout_subtree(root, start_x):
         nonlocal next_x
-        local_next_x = 0.0
+
+        # key fix: children must start placing at start_x
+        local_next_x = start_x
         nodes = set()
 
         def dfs(node):
@@ -238,6 +272,7 @@ def _layout_tree(
                 median = centers[len(centers) // 2]
                 layout[node]['x'] = median - layout[node]['width'] / 2
             else:
+                # Leaf: assign new horizontal slot
                 d = layout[node]['depth']
                 gap = depth_gap(d)
                 layout[node]['x'] = local_next_x
@@ -245,16 +280,15 @@ def _layout_tree(
 
         dfs(root)
 
-        # Normalize subtree so left edge = start_x
+        # Normalize subtree so that the leftmost node is exactly at start_x
         min_x = min(layout[n]['x'] for n in nodes)
         shift = start_x - min_x
         for n in nodes:
             layout[n]['x'] += shift
 
-        # Update next_x
         rightmost = max(layout[n]['x'] + layout[n]['width'] for n in nodes)
-        visited.update(nodes)
         next_x = rightmost + horizontal_spacing
+        visited.update(nodes)
 
     # --------------------------------------------------
     # Layout tree roots
@@ -317,6 +351,52 @@ def _layout_tree(
         info['y'] = depth_tops[d]
 
     return layout, char_width
+
+
+def _compute_exit_point(sx, sy, sw, sh, idx, N):
+    """
+    Compute the exit point for child idx out of N
+    using the full exit region:
+    - lower half of left side
+    - entire bottom
+    - lower half of right side
+    """
+    # Coordinates
+    left_x  = sx
+    right_x = sx + sw
+    mid_y   = sy + sh * 0.5
+    bot_y   = sy + sh
+
+    # Parameter t in [0,1]
+    t = (idx + 0.5) / N
+
+    # 4 segments of length 0.25:
+    # [0.00,0.25]: left side (mid_y → bot_y)
+    # [0.25,0.50]: bottom-left → bottom-center
+    # [0.50,0.75]: bottom-center → bottom-right
+    # [0.75,1.00]: right side (bot_y → mid_y)
+    if t < 0.25:
+        # left vertical segment
+        local = t / 0.25
+        x = left_x
+        y = mid_y + (bot_y - mid_y) * local
+    elif t < 0.50:
+        # bottom-left → bottom-center
+        local = (t - 0.25) / 0.25
+        x = left_x + (right_x - left_x) * 0.5 * local
+        y = bot_y
+    elif t < 0.75:
+        # bottom-center → bottom-right
+        local = (t - 0.50) / 0.25
+        x = left_x + sw * 0.5 + sw * 0.5 * local
+        y = bot_y
+    else:
+        # right vertical segment
+        local = (t - 0.75) / 0.25
+        x = right_x
+        y = bot_y - (bot_y - mid_y) * local
+
+    return x, y
 
 
 def _connected_components(classes, relations):
@@ -703,41 +783,29 @@ def render_svg_string(
     horizontal_spacing=60,
     margin=40,
 ) -> str:
-    """
-    Original render logic + left-spill protection inside label placement
-    (straight + curved edges).
-    No global shifts, no viewport patching, no 2-pass layout.
-    """
-
     if line_height is None:
         line_height = int(font_size * 1.4)
 
     # --------------------------------------------------
-    # Layout the DAG (original logic)
+    # Layout
     # --------------------------------------------------
     layout, char_width = _layout_tree(
-        classes, relations,
-        font_size,
-        vertical_spacing,
-        horizontal_spacing,
-        margin,
-        line_height,
+        classes, relations, font_size,
+        vertical_spacing, horizontal_spacing,
+        margin, line_height
     )
 
-    # Connected components marked with red border
     components = _connected_components(classes, relations)
     main = max(components, key=len) if components else set()
     is_disconnected = {c.name: (c.name not in main) for c in classes}
 
-    # SVG canvas (based on nodes only; labels will be clamped)
     width  = max(info['x'] + info['width']  + margin for info in layout.values())
     height = max(info['y'] + info['height'] + margin for info in layout.values())
 
-    # --------------------------------------------------
-    # SVG HEADER
-    # --------------------------------------------------
-    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-             f'font-family="{html.escape(font_family)}" font-size="{font_size}">', """
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'font-family="{html.escape(font_family)}" font-size="{font_size}">',
+        """
     <defs>
       <marker id="arrow" markerWidth="10" markerHeight="10"
               refX="9" refY="5" orient="auto">
@@ -758,11 +826,13 @@ def render_svg_string(
         stroke-width:2;
       }
     </style>
-    """]
+    """
+    ]
 
-    # --------------------------------------------------
-    # Prepare node-box AABBs (used for label collision avoidance)
-    # --------------------------------------------------
+    # Build children map for edge logic
+    children, _ = _build_graph(classes, relations)
+
+    # Node boxes for label collision detection
     node_boxes = {
         c.name: (
             layout[c.name]['x'],
@@ -772,14 +842,10 @@ def render_svg_string(
         )
         for c in classes
     }
-
     placed_label_boxes = []
 
-    # For straight vs curved detection
-    children, _ = _build_graph(classes, relations)
-
     # --------------------------------------------------
-    # RENDER EDGES
+    # Edges
     # --------------------------------------------------
     for r in relations:
         if r.source not in layout or r.target not in layout:
@@ -791,47 +857,48 @@ def render_svg_string(
         sx, sy, sw, sh = s_info['x'], s_info['y'], s_info['width'], s_info['height']
         tx, ty, tw, th = t_info['x'], t_info['y'], t_info['width'], t_info['height']
 
-        s_center = sx + sw / 2
-        t_center = tx + tw / 2
-        dx = t_center - s_center
-        side_limit = sw * 0.2
+        # Order siblings left→right
+        siblings = children[r.source]
+        N = len(siblings)
 
-        # Source exit point
-        if dx > side_limit:
-            x1 = sx + sw
-            y1 = sy + sh / 2
-        elif dx < -side_limit:
-            x1 = sx
-            y1 = sy + sh / 2
-        else:
-            x1 = s_center
-            y1 = sy + sh
+        sib_positions = [
+            (layout[s]['x'] + layout[s]['width']/2, s)
+            for s in siblings
+        ]
+        sib_positions.sort()
+        ordered = [n for (_, n) in sib_positions]
+        idx = ordered.index(r.target)
 
-        # Target entry
-        x2 = tx + tw / 2
+        # ---- EXIT POINT (fully generalized) ----
+        x1, y1 = _compute_exit_point(sx, sy, sw, sh, idx, N)
+
+        # ---- ENTRY POINT (aligned horizontally with parent's exit point) ----
+        # But still clamped to child box edges so lines look clean.
+        child_left = tx
+        child_right = tx + tw
+        ideal_x2 = x1  # horizontally align with exit point
+
+        # Clamp to inside top edge of the child box
+        x2 = max(child_left + 4, min(child_right - 4, ideal_x2))
         y2 = ty
 
-        # Direction → right-hand normal
+        # Edge direction
         vx = x2 - x1
         vy = y2 - y1
-        L = (vx * vx + vy * vy) ** 0.5 or 1.0
-        ex = vx / L
-        ey = vy / L
+        L = (vx*vx + vy*vy)**0.5 or 1.0
+        ex = vx/L
+        ey = vy/L
         px = ey
         py = -ex
 
         parts.append(f'<g class="edge-group edge-r-{r.source}-{r.target}">')
 
-        # Straight if exactly 1 child, or the middle of 3
-        chs = children[r.source]
-        if len(chs) == 3:
-            mid = sorted(
-                ((layout[ch]['x'] + layout[ch]['width'] / 2, ch) for ch in chs),
-                key=lambda p: p[0]
-            )[1][1]
-            is_straight = (r.target == mid)
+        # ---- Straight vs Curved ----
+        # Straight if exit point x ≈ box center
+        if abs(x1 - (sx + sw/2)) < 1.0:
+            is_straight = True
         else:
-            is_straight = (len(chs) == 1)
+            is_straight = False
 
         if is_straight:
             parts.append(
@@ -846,11 +913,10 @@ def render_svg_string(
                 f'marker-end="url(#arrow)" />'
             )
 
-        # ---------------------------
-        # EDGE LABEL
-        # ---------------------------
+        # ---- EDGE LABEL ----
         if r.label:
-            lines = r.label.split('\n')
+            lines = r.label.split("\n")
+
             if is_straight:
                 cx, cy = _place_straight_edge_label(
                     x1, y1, x2, y2,
@@ -861,10 +927,10 @@ def render_svg_string(
                     font_size,
                     node_boxes,
                     placed_label_boxes,
-                    margin,  # ← NEW
+                    margin,
                 )
             else:
-                curve_amount = 40  # must match _bezier_vertical default
+                curve_amount = 40
                 cx, cy = _place_curved_edge_label(
                     x1, y1, x2, y2,
                     curve_amount,
@@ -884,73 +950,41 @@ def render_svg_string(
             )
             parts.append(html.escape(lines[0]))
             for line in lines[1:]:
-                parts.append(
-                    f'<tspan x="{cx}" dy="{lh}">{html.escape(line)}</tspan>'
-                )
+                parts.append(f'<tspan x="{cx}" dy="{lh}">{html.escape(line)}</tspan>')
             parts.append('</text>')
 
+        # ---- SOURCE MULTIPLICITY (your version) ----
         if r.source_multiplicity:
-            # Which side of the source box does this edge exit from?
             eps = 1e-3
-            source_middle_y = sy + sh / 2
+            source_middle_y = sy + sh/2
             source_left = sx
             source_right = sx + sw
             text_anchor = 'middle'
 
             if abs(x1 - source_left) < eps and abs(y1 - source_middle_y) < eps:
-                # Exits from the LEFT side: label to the left of the box
                 mx = x1 - 12
                 my = y1
             elif abs(x1 - source_right) < eps and abs(y1 - source_middle_y) < eps:
-                # Exits from the RIGHT side: label to the right of the box
                 mx = x1 + 12
                 my = y1
             else:
-                # Exits from the BOTTOM (or fallback): label just below
                 mx = x1 + 5
                 my = y1 + 12
-                text_anchor = 'left'
+                text_anchor = "left"
 
             parts.append(
                 f'<text class="edge-label" x="{mx}" y="{my}" '
-                f'text-anchor="{text_anchor}" font-size="{font_size - 2}">'
+                f'text-anchor="{text_anchor}" font-size="{font_size-2}">'
                 f'{html.escape(r.source_multiplicity)}</text>'
             )
 
+        # ---- TARGET MULTIPLICITY (leftmost → left, others → right) ----
         if r.target_multiplicity:
-            # Determine sibling order (left/mid/right)
-            siblings = children[r.source]
-
-            # Map each sibling to its horizontal center
-            sib_positions = [
-                (layout[s]['x'] + layout[s]['width'] / 2, s)
-                for s in siblings
-            ]
-            sib_positions.sort()   # left → right
-
-            # Extract just the ordered sibling names
-            ordered = [name for (_, name) in sib_positions]
-
-            # Determine if this target is leftmost, middle, or rightmost
-            if len(ordered) >= 2:
-                if r.target == ordered[0]:
-                    position = "leftmost"
-                elif r.target == ordered[-1]:
-                    position = "rightmost"
-                else:
-                    position = "middle"
-            else:
-                position = "single"
-
-            # Base anchor directly above the target box
             base_x = x2
             base_y = ty - 6
 
-            # Horizontal offset based on sibling position
-            # leftmost → offset LEFT
-            # all others → offset RIGHT
-            if position == "leftmost":
-                mx = base_x - 18
+            if len(ordered) >= 2 and r.target == ordered[0]:
+                mx = base_x - 6
                 text_anchor = "right"
             else:
                 mx = base_x + 6
@@ -960,14 +994,14 @@ def render_svg_string(
 
             parts.append(
                 f'<text class="edge-label" x="{mx}" y="{my}" '
-                f'text-anchor="{text_anchor}" font-size="{font_size - 2}">'
+                f'text-anchor="{text_anchor}" font-size="{font_size-2}">'
                 f'{html.escape(r.target_multiplicity)}</text>'
             )
 
-        parts.append('</g>')
+        parts.append("</g>")
 
     # --------------------------------------------------
-    # RENDER NODES (unchanged)
+    # Nodes
     # --------------------------------------------------
     for cls in classes:
         info = layout[cls.name]
@@ -979,30 +1013,29 @@ def render_svg_string(
 
         if is_disconnected[cls.name]:
             stroke = cls.style.get('stroke', 'red')
-            sw = cls.style.get('stroke_width', '2')
+            swidth = cls.style.get('stroke_width', '2')
         else:
             stroke = cls.style.get('stroke', '#000')
-            sw = cls.style.get('stroke_width', '1')
+            swidth = cls.style.get('stroke_width', '1')
 
         parts.append(
             f'<rect x="{x}" y="{y}" width="{w}" height="{h}" '
-            f'rx="4" ry="4" fill="{fill}" stroke="{stroke}" stroke-width="{sw}" />'
+            f'rx="4" ry="4" fill="{fill}" stroke="{stroke}" stroke-width="{swidth}" />'
         )
 
         # Class name
-        cx = x + w / 2
+        cx = x + w/2
         cy = y + 2 + line_height
         parts.append(
             f'<text x="{cx}" y="{cy}" text-anchor="middle" '
             f'font-weight="bold" fill="{base_color}">{html.escape(cls.name)}</text>'
         )
 
-        # dividers + attributes + methods (unchanged)
+        # Divider
         divider = y + 10 + line_height + 3
         if info['attr_lines'] or info['method_lines']:
             parts.append(
-                f'<line x1="{x}" y1="{divider}" x2="{x+w}" '
-                f'y2="{divider}" stroke="{stroke}" />'
+                f'<line x1="{x}" y1="{divider}" x2="{x+w}" y2="{divider}" stroke="{stroke}"/>'
             )
 
         cy = divider + line_height
@@ -1011,28 +1044,26 @@ def render_svg_string(
         for entry in cls.attributes:
             text, sty = _parse_text_entry(entry)
             weight = sty.get('weight', 'normal')
-            fs = sty.get('size')
-            fam = sty.get('family')
             style = sty.get('style', 'normal')
             color = sty.get('color', base_color)
+            size = sty.get('size')
+            fam = sty.get('family')
             anchor = sty.get('anchor', 'start')
 
             bits = []
-            if fs:
-                bits.append(f'font-size="{fs}"')
-            if fam:
-                bits.append(f'font-family="{html.escape(fam)}"')
+            if size: bits.append(f'font-size="{size}"')
+            if fam:  bits.append(f'font-family="{html.escape(fam)}"')
 
             parts.append(
                 f'<text x="{x+10}" y="{cy}" {" ".join(bits)} '
                 f'font-weight="{weight}" font-style="{style}" '
-                f'text-anchor="{anchor}" fill="{color}">'
-                f'{html.escape(text)}</text>'
+                f'text-anchor="{anchor}" fill="{color}">{html.escape(text)}</text>'
             )
             cy += line_height
 
+        # Divider between attributes and methods
         if info['attr_lines'] and info['method_lines']:
-            mid = cy - line_height / 2
+            mid = cy - line_height/2
             parts.append(
                 f"<line x1='{x}' y1='{mid}' x2='{x+w}' y2='{mid}' stroke='{stroke}' />"
             )
@@ -1042,28 +1073,25 @@ def render_svg_string(
         for entry in cls.methods:
             text, sty = _parse_text_entry(entry)
             weight = sty.get('weight', 'normal')
-            fs = sty.get('size')
-            fam = sty.get('family')
             style = sty.get('style', 'normal')
             color = sty.get('color', base_color)
+            size = sty.get('size')
+            fam = sty.get('family')
             anchor = sty.get('anchor', 'start')
 
             bits = []
-            if fs:
-                bits.append(f"font-size='{fs}'")
-            if fam:
-                bits.append(f"font-family='{html.escape(fam)}'")
+            if size: bits.append(f"font-size='{size}'")
+            if fam:  bits.append(f"font-family='{html.escape(fam)}'")
 
             parts.append(
                 f'<text x="{x+10}" y="{cy}" {" ".join(bits)} '
                 f'font-weight="{weight}" font-style="{style}" '
-                f'text-anchor="{anchor}" fill="{color}">'
-                f'{html.escape(text)}</text>'
+                f'text-anchor="{anchor}" fill="{color}">{html.escape(text)}</text>'
             )
             cy += line_height
 
-    parts.append('</svg>')
-    return '\n'.join(parts)
+    parts.append("</svg>")
+    return "\n".join(parts)
 
 
 # ======================================================
