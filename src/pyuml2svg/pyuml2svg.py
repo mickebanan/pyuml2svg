@@ -95,38 +95,6 @@ def _compute_box_size(cls, font_size, char_width, line_height):
     }
 
 
-def _compute_exit_x(sx, sw, idx, N):
-    """
-    Compute the horizontal exit coordinate for child idx among N children,
-    using the unified exit region:
-      - left side's lower half
-      - entire bottom edge
-      - right side's lower half
-    (only X coordinate is needed for layout).
-    """
-    left_x  = sx
-    right_x = sx + sw
-
-    t = (idx + 0.5) / N  # in [0,1]
-
-    if t < 0.25:
-        # left side (x fixed at left_x)
-        x = left_x
-    elif t < 0.50:
-        # bottom-left → bottom-center
-        local = (t - 0.25) / 0.25
-        x = left_x + (sw * 0.5) * local
-    elif t < 0.75:
-        # bottom-center → bottom-right
-        local = (t - 0.50) / 0.25
-        x = left_x + sw * 0.5 + (sw * 0.5) * local
-    else:
-        # right side (x fixed at right_x)
-        x = right_x
-
-    return x
-
-
 def _build_graph(classes, relations):
     children = {c.name: [] for c in classes}
     parents  = {c.name: [] for c in classes}
@@ -680,60 +648,6 @@ def _place_curved_edge_label(
     return cx, cy
 
 
-def _compute_label_horizontal_gaps(
-    relations,
-    depths,
-    layout,
-    font_size,
-    char_width
-):
-    """
-    Compute additional *horizontal spacing* needed at each depth level to
-    accommodate labels to the right of edges.
-
-    Returns: { depth : required_extra_horizontal_spacing }
-    """
-    fs = font_size - 2  # label font size
-    gaps = {}
-
-    for r in relations:
-        if not r.label:
-            continue
-
-        s_depth = depths.get(r.source)
-        t_depth = depths.get(r.target)
-        if s_depth is None or t_depth is None:
-            continue
-
-        # We only worry about downward edges (parent → child)
-        depth = min(s_depth, t_depth)
-
-        # ---- Label width ----
-        lines = r.label.split("\n")
-        max_chars = max(len(line) for line in lines)
-        label_width = max_chars * char_width + 20  # some padding
-
-        # ---- Approximate label position ----
-        s_info = layout[r.source]
-        t_info = layout[r.target]
-
-        # Approx edge midpoint
-        x_mid = (
-            (s_info['x'] + s_info['width'] / 2)
-            + (t_info['x'] + t_info['width'] / 2)
-        ) / 2
-
-        # All labels are placed to the "right-hand side"
-        # But we don't know px yet — so approximate the horizontal demand
-        # as requiring label_width space *right* of x_mid.
-        needed_extra = label_width + 30  # 30px margin
-
-        # Accumulate the maximum padding needed at this depth
-        gaps[depth] = max(gaps.get(depth, 0), needed_extra)
-
-    return gaps
-
-
 def _compute_label_vertical_gaps(relations, depths, font_size):
     """
     Compute extra vertical gap needed between depth d and d+1
@@ -812,7 +726,6 @@ def render_svg_string(
     <!--                   UML Arrowhead Definitions                      -->
     <!-- ================================================================ -->
     <defs>
-
       <!-- Generalization (inheritance): hollow triangle -->
       <marker id="inheritance" markerWidth="12" markerHeight="12"
               refX="10" refY="6" orient="auto">
@@ -848,7 +761,6 @@ def render_svg_string(
               refX="9" refY="5" orient="auto">
         <polygon points="0,0 10,5 0,10" fill="white" stroke="black" />
       </marker>
-
     </defs>
 
     <style>%(style)s</style>
@@ -874,7 +786,6 @@ def render_svg_string(
     # Edges
     # --------------------------------------------------
     for r in relations:
-
         if r.source not in layout or r.target not in layout:
             continue
 
@@ -885,7 +796,6 @@ def render_svg_string(
         tx, ty, tw, th = t['x'], t['y'], t['width'], t['height']
 
         siblings = children[r.source]
-        N = len(siblings)
 
         sibs = sorted(
             siblings,
@@ -894,7 +804,7 @@ def render_svg_string(
         idx = sibs.index(r.target)
 
         # exit point
-        x1, y1 = _compute_exit_point(sx, sy, sw, sh, idx, N)
+        x1, y1 = _compute_exit_point(sx, sy, sw, sh, idx, len(siblings))
 
         # entry: align horizontally with exit
         ideal_x2 = x1
@@ -907,14 +817,12 @@ def render_svg_string(
         kind = (r.kind or "association").lower()
         marker_start = None
         marker_end   = None
-        dashed       = False
 
         if kind == "inheritance":
             marker_end = "inheritance"
 
         elif kind == "realization":
             marker_end = "realization"
-            dashed = True
 
         elif kind == "composition":
             marker_start = "composition"
@@ -924,7 +832,6 @@ def render_svg_string(
 
         elif kind == "dependency":
             marker_end = "dependency"
-            dashed = True
 
         elif kind == "directed-association":
             marker_end = "association"
