@@ -48,8 +48,9 @@ def load_spec(path: Path):
             source_multiplicity=r.get('source_multiplicity', ''),
             target_multiplicity=r.get('target_multiplicity', '')
         ))
+    options = data.get("options", {})
+    return classes, relations, options
 
-    return classes, relations
 
 
 # ------------------------------------------------------
@@ -60,6 +61,8 @@ def main():
     parser.add_argument('input', help='Input JSON file describing UML classes and relations.')
     parser.add_argument('-o', '--output', help='Output SVG file (default: stdout).')
     parser.add_argument('--font-size', type=int, default=14, help='Base font size used in the diagram.')
+    parser.add_argument('--edge-style', choices=['auto', 'orthogonal', 'bezier'], default=None,
+                        help='Routing style for edges (auto=default, orthogonal, bezier)')
     parser.add_argument('--vertical-spacing', type=int, default=80,
                         help='Vertical spacing between classes.')
     parser.add_argument('--horizontal-spacing', type=int, default=60,
@@ -68,16 +71,22 @@ def main():
     args = parser.parse_args()
 
     # Load UML spec
-    classes, relations = load_spec(Path(args.input))
+    classes, relations, json_opts = load_spec(Path(args.input))
+    edge_style = json_opts.get("edge_style", args.edge_style or "auto")
+    font_size = json_opts.get("font_size", args.font_size)
+    vertical_spacing = json_opts.get("vertical_spacing", args.vertical_spacing)
+    horizontal_spacing = json_opts.get("horizontal_spacing", args.horizontal_spacing)
+    margin = json_opts.get("margin", args.margin)
 
     # Produce SVG text
     svg = render_svg_string(
         classes,
         relations,
-        font_size=args.font_size,
-        vertical_spacing=args.vertical_spacing,
-        horizontal_spacing=args.horizontal_spacing,
-        margin=args.margin,
+        font_size=font_size,
+        vertical_spacing=vertical_spacing,
+        horizontal_spacing=horizontal_spacing,
+        margin=margin,
+        edge_style=edge_style,
     )
 
     # Output SVG

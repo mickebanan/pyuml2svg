@@ -460,6 +460,18 @@ def _line_intersects_box(x1, y1, x2, y2, box):
     )
 
 
+def _orthogonal_path(x1, y1, x2, y2):
+    """
+    Simple orthogonal (Manhattan) connector:
+        M x1,y1
+        L xm,y1
+        L xm,y2
+        L x2,y2
+    """
+    xm = (x1 + x2) / 2
+    return f"M{x1},{y1} L{xm},{y1} L{xm},{y2} L{x2},{y2}"
+
+
 def _place_straight_edge_label(
     x1, y1, x2, y2,
     source_box, target_box,
@@ -469,6 +481,7 @@ def _place_straight_edge_label(
     node_boxes,
     placed_label_boxes,
     margin,
+    forced_cy=None
 ):
     """
     Place label for a straight edge:
@@ -483,7 +496,11 @@ def _place_straight_edge_label(
     # Vertical midpoint between boxes
     source_bottom = sy + sh
     target_top = ty
-    cy = (source_bottom + target_top) / 2
+    if forced_cy is not None:
+        cy = forced_cy
+    else:
+        # current midpoint logic
+        cy = (source_bottom + target_top) / 2
 
     # Edge direction & right-hand perpendicular
     vx = x2 - x1
@@ -700,6 +717,7 @@ def render_svg_string(
     vertical_spacing=80,
     horizontal_spacing=60,
     margin=40,
+    edge_style="auto",
 ) -> str:
 
     if line_height is None:
@@ -796,12 +814,24 @@ def render_svg_string(
         tx, ty, tw, th = t['x'], t['y'], t['width'], t['height']
 
         siblings = children[r.source]
-
         sibs = sorted(
             siblings,
-            key=lambda name: layout[name]['x'] + layout[name]['width']/2
+            key=lambda name: layout[name]['x'] + layout[name]['width'] / 2
         )
         idx = sibs.index(r.target)
+        num = len(sibs)
+
+        # NEW: label vertical offset
+        if num > 1:
+            # Spread labels evenly between source bottom and children top
+            source_bottom = sy + sh
+            children_top = min(layout[ch]['y'] for ch in siblings)
+            span = children_top - source_bottom
+
+            # linear spacing with margin
+            label_y_offset = source_bottom + (span / (num + 1)) * (idx + 1)
+        else:
+            label_y_offset = None  # default behavior
 
         # exit point
         x1, y1 = _compute_exit_point(sx, sy, sw, sh, idx, len(siblings))
@@ -856,45 +886,47 @@ def render_svg_string(
         ms = f' marker-start="url(#{marker_start})"' if marker_start else ""
         me = f' marker-end="url(#{marker_end})"'     if marker_end   else ""
 
-        is_straight = abs(x1 - (sx + sw/2)) < 1.0
+        is_straight = abs(x1 - (sx + sw / 2)) < 1.0
+
+        use_ortho = edge_style == "orthogonal"
 
         if is_straight:
+            # straight vertical line
             parts.append(
                 f'<line class="edge-line" x1="{x1}" y1="{y1}" '
                 f'x2="{x2}" y2="{y2}"{ms}{me} />'
             )
-        else:
-            path = _bezier_vertical(x1, y1, x2, y2, 40)
+        elif use_ortho:
+            d = _orthogonal_path(x1, y1, x2, y2)
             parts.append(
-                f'<path class="edge-line" d="{path}"{ms}{me} />'
+                f'<path class="edge-line" d="{d}" fill="none"{ms}{me} />'
+            )
+        else:  # use_bezier
+            d = _bezier_vertical(x1, y1, x2, y2, 40)
+            parts.append(
+                f'<path class="edge-line" d="{d}" fill="none"{ms}{me} />'
             )
 
         # Edge label (unchanged)
         if r.label:
             lines = r.label.split("\n")
-            if is_straight:
-                cx, cy = _place_straight_edge_label(
-                    x1, y1, x2, y2,
-                    (sx, sy, sw, sh),
-                    (tx, ty, tw, th),
-                    lines,
-                    char_width,
-                    font_size,
-                    node_boxes,
-                    placed_label_boxes,
-                    margin,
-                )
+            if label_y_offset:
+                # override cy and place at fixed vertical band
+                cy_override = label_y_offset
             else:
-                cx, cy = _place_curved_edge_label(
-                    x1, y1, x2, y2,
-                    40,
-                    lines,
-                    char_width,
-                    font_size,
-                    node_boxes,
-                    placed_label_boxes,
-                    margin,
-                )
+                cy_override = None
+            cx, cy = _place_straight_edge_label(
+                x1, y1, x2, y2,
+                (sx, sy, sw, sh),
+                (tx, ty, tw, th),
+                lines,
+                char_width,
+                font_size,
+                node_boxes,
+                placed_label_boxes,
+                margin,
+                forced_cy=cy_override,
+            )
 
             fs = font_size - 2
             lh = fs
