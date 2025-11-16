@@ -726,4 +726,4 @@ def render_svg(
     with open(filename, 'w', encoding='utf-8') as f:
         f.write(svg)
 
-    print(f'[uml_svg] Saved UML diagram to {filename}')
+    print(f'[pyuml2svg] Saved UML diagram to {filename}')
