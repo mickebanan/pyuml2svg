@@ -804,7 +804,8 @@ def render_svg_string(
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'font-family="{html.escape(font_family)}" font-size="{font_size}">',
+        f'font-family="{html.escape(font_family)}" font-size="{font_size}" '
+        f'xmlns:xlink="http://www.w3.org/1999/xlink">',
         """
     <defs>
       <marker id="arrow" markerWidth="10" markerHeight="10"
@@ -824,6 +825,36 @@ def render_svg_string(
       .edge-group:hover .edge-line {
         stroke:#444;
         stroke-width:2;
+      }
+
+      .uml-class { cursor: pointer; }
+      
+      .toggle-marker {
+          font-size: 12px;
+          fill: #666;
+          cursor: pointer;
+          user-select: none;
+          transition: fill 0.15s;
+      }
+      .toggle-marker:hover {
+          fill: #000;
+      }
+    
+      .collapsible-visible {
+          opacity: 1;
+          transition: opacity 0.15s ease-in;
+      }
+      .collapsible-hidden {
+          opacity: 0;
+          transition: opacity 0.15s ease-out;
+      }
+      .uml-class rect {
+          transition: filter 0.20s ease-out, stroke-width 0.20s;
+      }
+        
+      .uml-class:hover rect {
+          filter: drop-shadow(0px 0px 3px rgba(0,0,0,0.5));
+          stroke-width: 1.2;
       }
     </style>
     """
@@ -869,36 +900,22 @@ def render_svg_string(
         ordered = [n for (_, n) in sib_positions]
         idx = ordered.index(r.target)
 
-        # ---- EXIT POINT (fully generalized) ----
+        # ---- EXIT POINT (parent → child) ----
         x1, y1 = _compute_exit_point(sx, sy, sw, sh, idx, N)
 
-        # ---- ENTRY POINT (aligned horizontally with parent's exit point) ----
-        # But still clamped to child box edges so lines look clean.
-        child_left = tx
+        # ---- ENTRY POINT (aligned horizontally with exit) ----
+        child_left  = tx
         child_right = tx + tw
-        ideal_x2 = x1  # horizontally align with exit point
-
-        # Clamp to inside top edge of the child box
+        ideal_x2 = x1
         x2 = max(child_left + 4, min(child_right - 4, ideal_x2))
         y2 = ty
 
-        # Edge direction
-        vx = x2 - x1
-        vy = y2 - y1
-        L = (vx*vx + vy*vy)**0.5 or 1.0
-        ex = vx/L
-        ey = vy/L
-        px = ey
-        py = -ex
+        parts.append(
+            f'<g class="edge-group collapse-visible" data-source="{r.source}" data-target="{r.target}">'
+        )
 
-        parts.append(f'<g class="edge-group edge-r-{r.source}-{r.target}">')
-
-        # ---- Straight vs Curved ----
-        # Straight if exit point x ≈ box center
-        if abs(x1 - (sx + sw/2)) < 1.0:
-            is_straight = True
-        else:
-            is_straight = False
+        # Straight vs curved
+        is_straight = abs(x1 - (sx + sw/2)) < 1.0
 
         if is_straight:
             parts.append(
@@ -930,10 +947,9 @@ def render_svg_string(
                     margin,
                 )
             else:
-                curve_amount = 40
                 cx, cy = _place_curved_edge_label(
                     x1, y1, x2, y2,
-                    curve_amount,
+                    40,
                     lines,
                     char_width,
                     font_size,
@@ -953,7 +969,7 @@ def render_svg_string(
                 parts.append(f'<tspan x="{cx}" dy="{lh}">{html.escape(line)}</tspan>')
             parts.append('</text>')
 
-        # ---- SOURCE MULTIPLICITY (your version) ----
+        # ---- MULTIPLICITIES ----
         if r.source_multiplicity:
             eps = 1e-3
             source_middle_y = sy + sh/2
@@ -962,15 +978,11 @@ def render_svg_string(
             text_anchor = 'middle'
 
             if abs(x1 - source_left) < eps and abs(y1 - source_middle_y) < eps:
-                mx = x1 - 12
-                my = y1
+                mx = x1 - 12; my = y1
             elif abs(x1 - source_right) < eps and abs(y1 - source_middle_y) < eps:
-                mx = x1 + 12
-                my = y1
+                mx = x1 + 12; my = y1
             else:
-                mx = x1 + 5
-                my = y1 + 12
-                text_anchor = "left"
+                mx = x1 + 5; my = y1 + 12; text_anchor = "left"
 
             parts.append(
                 f'<text class="edge-label" x="{mx}" y="{my}" '
@@ -978,17 +990,14 @@ def render_svg_string(
                 f'{html.escape(r.source_multiplicity)}</text>'
             )
 
-        # ---- TARGET MULTIPLICITY (leftmost → left, others → right) ----
         if r.target_multiplicity:
             base_x = x2
             base_y = ty - 6
 
             if len(ordered) >= 2 and r.target == ordered[0]:
-                mx = base_x - 6
-                text_anchor = "right"
+                mx = base_x - 6; text_anchor = "right"
             else:
-                mx = base_x + 6
-                text_anchor = "left"
+                mx = base_x + 6; text_anchor = "left"
 
             my = base_y
 
@@ -1018,9 +1027,14 @@ def render_svg_string(
             stroke = cls.style.get('stroke', '#000')
             swidth = cls.style.get('stroke_width', '1')
 
+        # Wrap node in a group for collapsible subtree
+        parts.append(f'<g id="class-{cls.name}" class="uml-class collapse-visible">')
+
+        # Clickable rectangle
         parts.append(
             f'<rect x="{x}" y="{y}" width="{w}" height="{h}" '
-            f'rx="4" ry="4" fill="{fill}" stroke="{stroke}" stroke-width="{swidth}" />'
+            f'rx="4" ry="4" fill="{fill}" stroke="{stroke}" stroke-width="{swidth}" '
+            f'onclick="toggleNode(\'{cls.name}\')" />'
         )
 
         # Class name
@@ -1030,6 +1044,16 @@ def render_svg_string(
             f'<text x="{cx}" y="{cy}" text-anchor="middle" '
             f'font-weight="bold" fill="{base_color}">{html.escape(cls.name)}</text>'
         )
+        # Draw expansion triangle if the class has children
+        if children.get(cls.name):
+            marker_x = x + w - 12
+            marker_y = y + 14
+            parts.append(
+                f'<text class="toggle-marker" '
+                f'id="toggle-{cls.name}" '
+                f'x="{marker_x}" y="{marker_y}" '
+                f'onclick="toggleNode(\'{cls.name}\'); event.stopPropagation();">▼</text>'
+            )
 
         # Divider
         divider = y + 10 + line_height + 3
@@ -1089,6 +1113,65 @@ def render_svg_string(
                 f'text-anchor="{anchor}" fill="{color}">{html.escape(text)}</text>'
             )
             cy += line_height
+
+        parts.append("</g>")  # end node group
+
+    # --------------------------------------------------
+    # Collapse / Expand JavaScript
+    # --------------------------------------------------
+    parts.append("""
+<script type="text/ecmascript"><![CDATA[
+function setFadeVisibility(element, hidden) {
+    if (hidden) {
+        element.classList.remove("collapsible-visible");
+        element.classList.add("collapsible-hidden");
+        // After fade-out, fully hide from layout (CSS cannot do this cleanly)
+        setTimeout(() => { element.style.display = "none"; }, 150);
+    } else {
+        element.style.display = "inline";
+        element.classList.remove("collapsible-hidden");
+        element.classList.add("collapsible-visible");
+    }
+}
+
+function toggleChildren(name, hidden) {
+    const node = document.getElementById("class-" + name);
+    if (!node) return;
+
+    setFadeVisibility(node, hidden);
+
+    const edges = document.querySelectorAll(`.edge-group[data-source='${name}']`);
+    edges.forEach(edge => {
+        const target = edge.getAttribute("data-target");
+        setFadeVisibility(edge, hidden);
+        toggleChildren(target, hidden);
+    });
+}
+
+function toggleNode(name) {
+    const node = document.getElementById("class-" + name);
+    if (!node) return;
+
+    const marker = document.getElementById("toggle-" + name);
+
+    const collapsed = node.getAttribute("data-collapsed") === "true";
+    const newState = !collapsed;
+    node.setAttribute("data-collapsed", newState ? "true" : "false");
+
+    // Update triangle ▼▶
+    if (marker) {
+        marker.textContent = newState ? "▶" : "▼";
+    }
+
+    const edges = document.querySelectorAll(`.edge-group[data-source='${name}']`);
+    edges.forEach(edge => {
+        const target = edge.getAttribute("data-target");
+        setFadeVisibility(edge, newState);
+        toggleChildren(target, newState);
+    });
+}
+]]></script>
+""")
 
     parts.append("</svg>")
     return "\n".join(parts)
