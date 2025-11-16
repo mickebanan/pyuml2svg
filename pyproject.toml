@@ -1,6 +1,6 @@
 [project]
 name = "pyuml2svg"
-version = "0.4.2"
+dynamic = ["version"]
 description = "Pure Python UML class diagram generator that renders SVG without dependencies."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -22,7 +22,7 @@ classifiers = [
 dependencies = []
 
 [project.scripts]
-pyuml2svg = "cli:main"  # gives the PyPI-installed CLI
+pyuml2svg = "pyuml2svg.cli:main"  # gives the PyPI-installed CLI
 
 [build-system]
 requires = ["setuptools>=69", "wheel"]
@@ -30,6 +30,13 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 include-package-data = true
+package-dir = {"" = "src"}
+
+[tool.setuptools.dynamic]
+version = {attr = "pyuml2svg.version.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.setuptools.package-data]
-pyuml2svg = ['*.css', '*.js']
+pyuml2svg = ['assets/*.css', 'assets/*.js']
