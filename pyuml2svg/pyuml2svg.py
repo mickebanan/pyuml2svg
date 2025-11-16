@@ -11,8 +11,8 @@ Features:
 - Multiplicity labels placed locally near their endpoints.
 - Grey edges & labels with hover highlighting.
 """
-
 from dataclasses import dataclass, field
+from importlib.resources import files
 from typing import List, Dict
 import html
 
@@ -163,6 +163,10 @@ def _compute_depths(roots, children, names):
             depths[n] = 0
 
     return depths
+
+
+def _load_asset(filename):
+    return (files('pyuml2svg') / filename).read_text()
 
 
 def _layout_tree(
@@ -801,6 +805,7 @@ def render_svg_string(
 
     width  = max(info['x'] + info['width']  + margin for info in layout.values())
     height = max(info['y'] + info['height'] + margin for info in layout.values())
+    style = _load_asset('style.css')
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
@@ -815,49 +820,9 @@ def render_svg_string(
     </defs>
 
     <style>
-      .edge-line { stroke:#888; stroke-width:1; transition:stroke 0.15s, stroke-width 0.15s; }
-      .edge-label { fill:#888; transition:fill 0.15s, font-weight 0.15s; }
-
-      .edge-group:hover .edge-label {
-        fill:#000;
-      }
-
-      .edge-group:hover .edge-line {
-        stroke:#444;
-        stroke-width:2;
-      }
-
-      .uml-class { cursor: pointer; }
-      
-      .toggle-marker {
-          font-size: 12px;
-          fill: #666;
-          cursor: pointer;
-          user-select: none;
-          transition: fill 0.15s;
-      }
-      .toggle-marker:hover {
-          fill: #000;
-      }
-    
-      .collapsible-visible {
-          opacity: 1;
-          transition: opacity 0.15s ease-in;
-      }
-      .collapsible-hidden {
-          opacity: 0;
-          transition: opacity 0.15s ease-out;
-      }
-      .uml-class rect {
-          transition: filter 0.20s ease-out, stroke-width 0.20s;
-      }
-        
-      .uml-class:hover rect {
-          filter: drop-shadow(0px 0px 3px rgba(0,0,0,0.5));
-          stroke-width: 1.2;
-      }
+    %(style)s
     </style>
-    """
+    """ % {'style': style}
     ]
 
     # Build children map for edge logic
@@ -1119,59 +1084,7 @@ def render_svg_string(
     # --------------------------------------------------
     # Collapse / Expand JavaScript
     # --------------------------------------------------
-    parts.append("""
-<script type="text/ecmascript"><![CDATA[
-function setFadeVisibility(element, hidden) {
-    if (hidden) {
-        element.classList.remove("collapsible-visible");
-        element.classList.add("collapsible-hidden");
-        // After fade-out, fully hide from layout (CSS cannot do this cleanly)
-        setTimeout(() => { element.style.display = "none"; }, 150);
-    } else {
-        element.style.display = "inline";
-        element.classList.remove("collapsible-hidden");
-        element.classList.add("collapsible-visible");
-    }
-}
-
-function toggleChildren(name, hidden) {
-    const node = document.getElementById("class-" + name);
-    if (!node) return;
-
-    setFadeVisibility(node, hidden);
-
-    const edges = document.querySelectorAll(`.edge-group[data-source='${name}']`);
-    edges.forEach(edge => {
-        const target = edge.getAttribute("data-target");
-        setFadeVisibility(edge, hidden);
-        toggleChildren(target, hidden);
-    });
-}
-
-function toggleNode(name) {
-    const node = document.getElementById("class-" + name);
-    if (!node) return;
-
-    const marker = document.getElementById("toggle-" + name);
-
-    const collapsed = node.getAttribute("data-collapsed") === "true";
-    const newState = !collapsed;
-    node.setAttribute("data-collapsed", newState ? "true" : "false");
-
-    // Update triangle ▼▶
-    if (marker) {
-        marker.textContent = newState ? "▶" : "▼";
-    }
-
-    const edges = document.querySelectorAll(`.edge-group[data-source='${name}']`);
-    edges.forEach(edge => {
-        const target = edge.getAttribute("data-target");
-        setFadeVisibility(edge, newState);
-        toggleChildren(target, newState);
-    });
-}
-]]></script>
-""")
+    parts.append("<script type=\"text/ecmascript\"><![CDATA[%(js)s]]></script>" % {'js': _load_asset('script.js')})
 
     parts.append("</svg>")
     return "\n".join(parts)

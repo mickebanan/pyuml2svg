@@ -1,0 +1,41 @@
+.edge-line { stroke:#888; stroke-width:1; transition:stroke 0.15s, stroke-width 0.15s; }
+.edge-label { fill:#888; transition:fill 0.15s, font-weight 0.15s; }
+
+.edge-group:hover .edge-label {
+    fill:#000;
+}
+
+.edge-group:hover .edge-line {
+    stroke:#444;
+    stroke-width:2;
+}
+
+.uml-class { cursor: pointer; }
+
+.toggle-marker {
+    font-size: 12px;
+    fill: #666;
+    cursor: pointer;
+    user-select: none;
+    transition: fill 0.15s;
+}
+.toggle-marker:hover {
+    fill: #000;
+}
+
+.collapsible-visible {
+    opacity: 1;
+    transition: opacity 0.15s ease-in;
+}
+.collapsible-hidden {
+    opacity: 0;
+    transition: opacity 0.15s ease-out;
+}
+.uml-class rect {
+    transition: filter 0.20s ease-out, stroke-width 0.20s;
+}
+
+.uml-class:hover rect {
+    filter: drop-shadow(0px 0px 3px rgba(0,0,0,0.5));
+    stroke-width: 1.2;
+}
