@@ -141,37 +141,60 @@ def _layout_tree(
     horizontal_spacing,
     margin,
     line_height,
+    *,
+    horizontal_gaps=None,
+    vertical_gaps=None,
 ):
     """
-    DAG-aware portrait layout:
-    - Build full parent/child graph.
-    - Extract "layout tree" with unique-parent edges.
-    - Layout each tree compactly; remaining nodes left→right.
+    DAG-aware portrait layout with label-aware horizontal and vertical padding.
+
+    NEW:
+    - horizontal_gaps: {depth → extra horizontal spacing}
+    - vertical_gaps:   {depth → extra vertical spacing}
+
+    Both are optional. If omitted, behavior matches the original.
     """
+
     name_to_class = {c.name: c for c in classes}
     char_width = font_size * 0.60
 
+    # --------------------------------------------------
+    # Precompute sizes
+    # --------------------------------------------------
     sizes = {
         name: _compute_box_size(cls, font_size, char_width, line_height)
         for name, cls in name_to_class.items()
     }
 
+    # --------------------------------------------------
+    # Build DAG + find roots
+    # --------------------------------------------------
     children, parents = _build_graph(classes, relations)
     roots = _find_roots(classes, parents)
     depths = _compute_depths(roots, children, list(name_to_class.keys()))
 
+    # --------------------------------------------------
+    # Initialize layout dictionary
+    # --------------------------------------------------
     layout = {
-        name: {**sizes[name], 'x': None, 'y': None, 'depth': depths[name]}
+        name: {
+            **sizes[name],
+            'x': None,
+            'y': None,
+            'depth': depths[name],
+        }
         for name in name_to_class
     }
 
-    # DAG-aware tree edges: child with exactly one parent
+    # --------------------------------------------------
+    # Extract DAG-aware spanning tree
+    # --------------------------------------------------
     tree_children = {n: [] for n in name_to_class}
-    tree_parents  = {n: None for n in name_to_class}
+    tree_parents = {n: None for n in name_to_class}
 
     for p, chs in children.items():
         for ch in chs:
-            if len(parents[ch]) == 1:
+            if len(parents[ch]) == 1:  # true tree edges
                 tree_children[p].append(ch)
                 tree_parents[ch] = p
 
@@ -182,6 +205,16 @@ def _layout_tree(
     visited = set()
     next_x = margin
 
+    # Helper: get depth-based horizontal gap
+    def depth_gap(d):
+        base = horizontal_spacing
+        if horizontal_gaps:
+            return max(base, horizontal_gaps.get(d, 0))
+        return base
+
+    # --------------------------------------------------
+    # DFS to place each subtree compactly
+    # --------------------------------------------------
     def layout_subtree(root, start_x):
         nonlocal next_x
         local_next_x = 0.0
@@ -189,6 +222,7 @@ def _layout_tree(
 
         def dfs(node):
             nonlocal local_next_x
+
             if node in nodes:
                 return
             nodes.add(node)
@@ -198,13 +232,16 @@ def _layout_tree(
                 dfs(c)
 
             if chs:
+                # Center parent above median of children
                 centers = [layout[c]['x'] + layout[c]['width'] / 2 for c in chs]
                 centers.sort()
                 median = centers[len(centers) // 2]
                 layout[node]['x'] = median - layout[node]['width'] / 2
             else:
+                d = layout[node]['depth']
+                gap = depth_gap(d)
                 layout[node]['x'] = local_next_x
-                local_next_x += layout[node]['width'] + horizontal_spacing
+                local_next_x += layout[node]['width'] + gap
 
         dfs(root)
 
@@ -214,32 +251,70 @@ def _layout_tree(
         for n in nodes:
             layout[n]['x'] += shift
 
+        # Update next_x
         rightmost = max(layout[n]['x'] + layout[n]['width'] for n in nodes)
         visited.update(nodes)
         next_x = rightmost + horizontal_spacing
 
-    # Layout each tree root
+    # --------------------------------------------------
+    # Layout tree roots
+    # --------------------------------------------------
     for r in tree_roots:
         if r not in visited:
             layout_subtree(r, next_x)
 
-    # Remaining nodes (multi-parent / disconnected)
+    # --------------------------------------------------
+    # Layout remaining nodes (multi-parent or disconnected)
+    # --------------------------------------------------
     for n in name_to_class:
         if n not in visited:
+            d = layout[n]['depth']
+            gap = depth_gap(d)
             layout[n]['x'] = next_x
-            next_x += layout[n]['width'] + horizontal_spacing
+            next_x += layout[n]['width'] + gap
 
-    # Shift if needed to maintain margin
+    # --------------------------------------------------
+    # Enforce left margin
+    # --------------------------------------------------
     min_x = min(info['x'] for info in layout.values())
     if min_x < margin:
         shift = margin - min_x
         for info in layout.values():
             info['x'] += shift
 
-    # Vertical placement by depth
-    max_h = max(info['height'] for info in layout.values())
-    for n, info in layout.items():
-        info['y'] = margin + info['depth'] * (max_h + vertical_spacing)
+    # --------------------------------------------------
+    # Vertical placement with depth-dependent gaps
+    # --------------------------------------------------
+    depth_heights = {}
+    for name, info in layout.items():
+        d = info['depth']
+        depth_heights[d] = max(depth_heights.get(d, 0), info['height'])
+
+    # Existing label gaps (vertical)
+    builtin_vertical_gaps = _compute_label_vertical_gaps(relations, depths, font_size)
+
+    # Prepare combined gaps
+    def vgap(d):
+        base = vertical_spacing
+        extra1 = builtin_vertical_gaps.get(d, 0)
+        extra2 = 0
+        if vertical_gaps:
+            extra2 = vertical_gaps.get(d, 0)
+        return base + max(extra1, extra2)
+
+    max_depth = max(depths.values()) if depths else 0
+
+    depth_tops = {}
+    current_y = margin
+    for d in range(max_depth + 1):
+        depth_tops[d] = current_y
+        row_h = depth_heights.get(d, 0)
+        current_y += row_h + vgap(d)
+
+    # Assign y positions
+    for name, info in layout.items():
+        d = info['depth']
+        info['y'] = depth_tops[d]
 
     return layout, char_width
 
@@ -403,6 +478,172 @@ def _place_straight_edge_label(
     return cx, cy
 
 
+def _place_curved_edge_label(
+    x1, y1, x2, y2,
+    curve_amount,
+    lines,
+    char_width,
+    font_size,
+    node_boxes,
+    placed_label_boxes,
+):
+    """
+    Place label near a quadratic Bezier curve:
+        P0 = (x1, y1)
+        C  = ((x1+x2)/2, mid_y - curve_amount)
+        P2 = (x2, y2)
+
+    - Evaluate point & tangent at t=0.5
+    - Offset along right-hand normal
+    - Iteratively push outward until no collisions with nodes/labels.
+    """
+    mid_y = (y1 + y2) / 2
+    cx_ctrl = (x1 + x2) / 2
+    cy_ctrl = mid_y - curve_amount
+
+    # Point on curve at t=0.5
+    bx = 0.25 * x1 + 0.5 * cx_ctrl + 0.25 * x2
+    by = 0.25 * y1 + 0.5 * cy_ctrl + 0.25 * y2
+
+    # Tangent B'(0.5)
+    tx = (cx_ctrl - x1) + (x2 - cx_ctrl)
+    ty = (cy_ctrl - y1) + (y2 - cy_ctrl)
+    L = (tx * tx + ty * ty) ** 0.5 or 1.0
+    ex = tx / L
+    ey = ty / L
+
+    # Right-hand normal
+    px = ey
+    py = -ex
+
+    # Label size
+    fs = font_size - 2
+    lh = fs
+    max_chars = max(len(line) for line in lines) if lines else 0
+    lw = max_chars * char_width
+    lh_total = lh * max(1, len(lines))
+
+    offset = 20.0
+
+    for _ in range(12):
+        cx = bx + px * offset
+        cy = by + py * offset
+
+        box = (
+            cx - lw / 2,
+            cy - lh_total / 2,
+            cx + lw / 2,
+            cy + lh_total / 2,
+        )
+
+        if (
+            not _boxes_collide(box, node_boxes.values())
+            and not _boxes_collide(box, placed_label_boxes)
+        ):
+            placed_label_boxes.append(box)
+            return cx, cy
+
+        offset += 6.0
+
+    # Fallback
+    cx = bx + px * offset
+    cy = by + py * offset
+    placed_label_boxes.append(box)
+    return cx, cy
+
+
+def _compute_label_horizontal_gaps(
+    relations,
+    depths,
+    layout,
+    font_size,
+    char_width
+):
+    """
+    Compute additional *horizontal spacing* needed at each depth level to
+    accommodate labels to the right of edges.
+
+    Returns: { depth : required_extra_horizontal_spacing }
+    """
+    fs = font_size - 2  # label font size
+    gaps = {}
+
+    for r in relations:
+        if not r.label:
+            continue
+
+        s_depth = depths.get(r.source)
+        t_depth = depths.get(r.target)
+        if s_depth is None or t_depth is None:
+            continue
+
+        # We only worry about downward edges (parent → child)
+        depth = min(s_depth, t_depth)
+
+        # ---- Label width ----
+        lines = r.label.split("\n")
+        max_chars = max(len(line) for line in lines)
+        label_width = max_chars * char_width + 20  # some padding
+
+        # ---- Approximate label position ----
+        s_info = layout[r.source]
+        t_info = layout[r.target]
+
+        # Approx edge midpoint
+        x_mid = (
+            (s_info['x'] + s_info['width'] / 2)
+            + (t_info['x'] + t_info['width'] / 2)
+        ) / 2
+
+        # All labels are placed to the "right-hand side"
+        # But we don't know px yet — so approximate the horizontal demand
+        # as requiring label_width space *right* of x_mid.
+        needed_extra = label_width + 30  # 30px margin
+
+        # Accumulate the maximum padding needed at this depth
+        gaps[depth] = max(gaps.get(depth, 0), needed_extra)
+
+    return gaps
+
+
+def _compute_label_vertical_gaps(relations, depths, font_size):
+    """
+    Compute extra vertical gap needed between depth d and d+1
+    based on label heights of edges crossing that boundary.
+    """
+    fs = font_size - 2  # label font size
+    gaps = {}           # depth -> extra gap
+
+    for r in relations:
+        if not r.label:
+            continue
+
+        s_depth = depths.get(r.source)
+        t_depth = depths.get(r.target)
+        if s_depth is None or t_depth is None:
+            continue
+
+        # Only consider edges going "downward" in the DAG
+        if t_depth <= s_depth:
+            continue
+
+        # We treat this label as living between the shallower and next level
+        d = s_depth  # usual case: child at s_depth+1
+
+        lines = r.label.split('\n')
+        label_height = fs * max(1, len(lines))
+
+        # Some padding so label isn't cramped vertically
+        needed_gap = label_height + 12
+
+        if d in gaps:
+            gaps[d] = max(gaps[d], needed_gap)
+        else:
+            gaps[d] = needed_gap
+
+    return gaps
+
+
 # ======================================================
 # Main renderer
 # ======================================================
@@ -418,50 +659,104 @@ def render_svg_string(
     horizontal_spacing=60,
     margin=40,
 ) -> str:
+
     if line_height is None:
         line_height = int(font_size * 1.4)
 
-    layout, char_width = _layout_tree(
-        classes, relations, font_size,
-        vertical_spacing, horizontal_spacing,
-        margin, line_height
+    # --------------------------------------------------
+    # PASS 1: Initial layout (no label-aware gaps)
+    # --------------------------------------------------
+    layout1, char_width = _layout_tree(
+        classes, relations,
+        font_size,
+        vertical_spacing,
+        horizontal_spacing,
+        margin,
+        line_height,
     )
 
+    # Extract node depths from the first pass
+    depths = {name: info['depth'] for name, info in layout1.items()}
+
+    # --------------------------------------------------
+    # COMPUTE HORIZONTAL & VERTICAL GAPS FOR PASS 2
+    # --------------------------------------------------
+
+    # Vertical gaps (built-in)
+    builtin_vertical_gaps = _compute_label_vertical_gaps(
+        relations, depths, font_size
+    )
+
+    # Horizontal gaps (new)
+    horizontal_gaps = _compute_label_horizontal_gaps(
+        relations,
+        depths,
+        layout1,
+        font_size,
+        char_width,
+    )
+
+    # --------------------------------------------------
+    # PASS 2: Final label-aware layout
+    # --------------------------------------------------
+    layout, char_width = _layout_tree(
+        classes,
+        relations,
+        font_size,
+        vertical_spacing,
+        horizontal_spacing,
+        margin,
+        line_height,
+        horizontal_gaps=horizontal_gaps,
+        vertical_gaps=builtin_vertical_gaps,
+    )
+
+    # --------------------------------------------------
+    # Connected-component highlighting
+    # --------------------------------------------------
     components = _connected_components(classes, relations)
     main = max(components, key=len) if components else set()
     is_disconnected = {c.name: (c.name not in main) for c in classes}
 
+    # --------------------------------------------------
+    # SVG canvas size
+    # --------------------------------------------------
     width  = max(info['x'] + info['width']  + margin for info in layout.values())
     height = max(info['y'] + info['height'] + margin for info in layout.values())
 
-    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-             f'font-family="{html.escape(font_family)}" font-size="{font_size}">', """
-    <defs>
-      <marker id="arrow" markerWidth="10" markerHeight="10"
-              refX="9" refY="5" orient="auto">
-        <polygon points="0,0 10,5 0,10" fill="black" />
-      </marker>
-    </defs>
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'width="{width}" height="{height}" '
+        f'font-family="{html.escape(font_family)}" font-size="{font_size}">',
 
-    <style>
-      .edge-line { stroke:#888; stroke-width:1; transition:stroke 0.15s, stroke-width 0.15s; }
-      .edge-label { fill:#888; transition:fill 0.15s, font-weight 0.15s; }
+        """
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="10"
+                  refX="9" refY="5" orient="auto">
+            <polygon points="0,0 10,5 0,10" fill="black" />
+          </marker>
+        </defs>
 
-      .edge-group:hover .edge-label {
-        fill:#000;
-        font-weight:bold;
-      }
+        <style>
+          .edge-line { stroke:#888; stroke-width:1; transition:stroke 0.15s, stroke-width 0.15s; }
+          .edge-label { fill:#888; transition:fill 0.15s, font-weight 0.15s; }
 
-      .edge-group:hover .edge-line {
-        stroke:#444;
-        stroke-width:2;
-      }
-    </style>
-    """]
+          .edge-group:hover .edge-label {
+            fill:#000;
+            font-weight:bold;
+          }
 
-    children, _ = _build_graph(classes, relations)
+          .edge-group:hover .edge-line {
+            stroke:#444;
+            stroke-width:2;
+          }
+        </style>
+        """
+    ]
 
-    # Node boxes for collision checks (edge labels only)
+    # --------------------------------------------------
+    # Prepare node boxes for collision detection
+    # --------------------------------------------------
     node_boxes = {
         c.name: (
             layout[c.name]['x'],
@@ -474,7 +769,12 @@ def render_svg_string(
     placed_label_boxes = []
 
     # --------------------------------------------------
-    # Edges
+    # Build full children map for determining straight edges
+    # --------------------------------------------------
+    children, _ = _build_graph(classes, relations)
+
+    # --------------------------------------------------
+    # RENDER EDGES
     # --------------------------------------------------
     for r in relations:
         if r.source not in layout or r.target not in layout:
@@ -491,7 +791,7 @@ def render_svg_string(
         dx = t_center - s_center
         side_limit = sw * 0.2
 
-        # Exit point from source box
+        # Source exit
         if dx > side_limit:
             x1 = sx + sw
             y1 = sy + sh / 2
@@ -502,11 +802,11 @@ def render_svg_string(
             x1 = s_center
             y1 = sy + sh
 
-        # Entry at top center of target box
+        # Target entry (top center)
         x2 = tx + tw / 2
         y2 = ty
 
-        # Edge direction & right-hand perpendicular
+        # Edge direction → right-hand normal
         vx = x2 - x1
         vy = y2 - y1
         L = (vx * vx + vy * vy) ** 0.5 or 1.0
@@ -517,10 +817,10 @@ def render_svg_string(
 
         parts.append(f'<g class="edge-group edge-r-{r.source}-{r.target}">')
 
-        # Straight vs Bezier
+        # Straight vs. Bezier
         chs = children[r.source]
         if len(chs) == 3:
-            # For three children, only the horizontal middle gets straight
+            # Only middle child gets straight edge
             mid = sorted(
                 ((layout[ch]['x'] + layout[ch]['width'] / 2, ch) for ch in chs),
                 key=lambda p: p[0]
@@ -535,13 +835,16 @@ def render_svg_string(
                 f'x2="{x2}" y2="{y2}" marker-end="url(#arrow)" />'
             )
         else:
-            path = _bezier_vertical(x1, y1, x2, y2)
+            curve_amount = 40
+            path = _bezier_vertical(x1, y1, x2, y2, curve_amount)
             parts.append(
                 f'<path class="edge-line" d="{path}" fill="none" '
                 f'marker-end="url(#arrow)" />'
             )
 
-        # Edge labels
+        # ----------------------------
+        # Edge Labels
+        # ----------------------------
         if r.label:
             lines = r.label.split('\n')
             if is_straight:
@@ -556,11 +859,16 @@ def render_svg_string(
                     placed_label_boxes,
                 )
             else:
-                # Simple mid-perpendicular for curved edges
-                mx = (x1 + x2) / 2
-                my = (y1 + y2) / 2
-                cx = mx + (-ey) * 10
-                cy = my + ex * 10
+                curve_amount = 40
+                cx, cy = _place_curved_edge_label(
+                    x1, y1, x2, y2,
+                    curve_amount,
+                    lines,
+                    char_width,
+                    font_size,
+                    node_boxes,
+                    placed_label_boxes,
+                )
 
             fs = font_size - 2
             lh = fs
@@ -573,7 +881,7 @@ def render_svg_string(
                 parts.append(f'<tspan x="{cx}" dy="{lh}">{html.escape(line)}</tspan>')
             parts.append('</text>')
 
-        # Multiplicities (simple, local placement: along edge, then right)
+        # Multiplicities
         along = 10
         perp = 12
 
@@ -602,7 +910,7 @@ def render_svg_string(
         parts.append('</g>')
 
     # --------------------------------------------------
-    # Nodes
+    # RENDER NODES
     # --------------------------------------------------
     for cls in classes:
         info = layout[cls.name]
@@ -632,7 +940,7 @@ def render_svg_string(
             f'font-weight="bold" fill="{base_color}">{html.escape(cls.name)}</text>'
         )
 
-        # Divider between header and attributes/methods
+        # Header divider
         divider = y + 10 + line_height + 3
         if info['attr_lines'] or info['method_lines']:
             parts.append(
