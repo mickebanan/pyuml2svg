@@ -497,81 +497,101 @@ def _place_curved_edge_label(
     margin,
 ):
     """
-    Place label near a quadratic Bezier curve:
-        P0 = (x1, y1)
-        C  = ((x1+x2)/2, mid_y - curve_amount)
-        P2 = (x2, y2)
-
-    - Evaluate point & tangent at t=0.5
-    - Offset along right-hand normal
-    - Iteratively push outward until no collisions with nodes/labels.
-    - Ensure label does not spill left of `margin`.
+    Improved curved-edge label placement:
+    - samples multiple t positions along the curve
+    - chooses left or right normal based on available space
+    - pushes outward until a free spot is found
+    - clamps so the label does not spill left of `margin`
     """
 
-    # Control point matches _bezier_vertical()
+    # --- curve geometry (must match _bezier_vertical) ---
     mid_y = (y1 + y2) / 2
     cx_ctrl = (x1 + x2) / 2
     cy_ctrl = mid_y - curve_amount
 
-    # Point on curve at t=0.5
-    bx = 0.25 * x1 + 0.5 * cx_ctrl + 0.25 * x2
-    by = 0.25 * y1 + 0.5 * cy_ctrl + 0.25 * y2
+    def bezier_point(t: float):
+        """Quadratic Bezier point at parameter t."""
+        u = 1.0 - t
+        bx = u * u * x1 + 2 * u * t * cx_ctrl + t * t * x2
+        by = u * u * y1 + 2 * u * t * cy_ctrl + t * t * y2
+        return bx, by
 
-    # Tangent B'(0.5)
-    tx = (cx_ctrl - x1) + (x2 - cx_ctrl)
-    ty = (cy_ctrl - y1) + (y2 - cy_ctrl)
-    L = (tx * tx + ty * ty) ** 0.5 or 1.0
-    ex = tx / L
-    ey = ty / L
+    def bezier_tangent(t: float):
+        """Unit tangent of quadratic Bezier at parameter t."""
+        # derivative of quadratic Bezier:
+        tx = 2 * (1 - t) * (cx_ctrl - x1) + 2 * t * (x2 - cx_ctrl)
+        ty = 2 * (1 - t) * (cy_ctrl - y1) + 2 * t * (y2 - cy_ctrl)
+        L = (tx * tx + ty * ty) ** 0.5 or 1.0
+        return tx / L, ty / L
 
-    # Right-hand normal
-    px = ey
-    py = -ex
-
-    # Label size
+    # --- label size ---
     fs = font_size - 2
     lh = fs
     max_chars = max(len(line) for line in lines) if lines else 0
     lw = max_chars * char_width
     lh_total = lh * max(1, len(lines))
 
-    offset = 20.0
+    # --- candidate t positions along the curve ---
+    t_candidates = [0.35, 0.5, 0.65]
 
-    for _ in range(12):
-        cx = bx + px * offset
-        cy = by + py * offset
+    best = None
+    best_penalty = float("inf")
 
-        # clamp so label doesn't spill left of margin
+    for t in t_candidates:
+        bx, by = bezier_point(t)
+        txn, tyn = bezier_tangent(t)
+
+        # left & right normals for a unit tangent
+        # (rotate 90° CCW / CW)
+        left_normal  = (-tyn, txn)
+        right_normal = ( tyn, -txn)
+
+        for nx, ny in (left_normal, right_normal):
+            offset = 20.0
+            for _ in range(30):
+                cx = bx + nx * offset
+                cy = by + ny * offset
+
+                # clamp so label doesn't spill left of margin
+                if lw > 0 and cx - lw / 2 < margin:
+                    cx = margin + lw / 2
+
+                label_box = (
+                    cx - lw / 2,
+                    cy - lh_total / 2,
+                    cx + lw / 2,
+                    cy + lh_total / 2,
+                )
+
+                if (
+                    not _boxes_collide(label_box, node_boxes.values())
+                    and not _boxes_collide(label_box, placed_label_boxes)
+                ):
+                    # simple penalty: prefer smaller offset and t near 0.5
+                    penalty = offset + abs(t - 0.5) * 20.0
+                    if penalty < best_penalty:
+                        best_penalty = penalty
+                        best = (cx, cy, label_box)
+                    break
+
+                offset += 8.0
+
+    # Fallback: sit on the curve midpoint if nothing worked
+    if best is None:
+        t = 0.5
+        bx, by = bezier_point(t)
+        cx, cy = bx, by
         if lw > 0 and cx - lw / 2 < margin:
             cx = margin + lw / 2
-
-        box = (
+        label_box = (
             cx - lw / 2,
             cy - lh_total / 2,
             cx + lw / 2,
             cy + lh_total / 2,
         )
+        best = (cx, cy, label_box)
 
-        if (
-            not _boxes_collide(box, node_boxes.values())
-            and not _boxes_collide(box, placed_label_boxes)
-        ):
-            placed_label_boxes.append(box)
-            return cx, cy
-
-        offset += 6.0
-
-    # Fallback: last attempt with clamping
-    cx = bx + px * offset
-    cy = by + py * offset
-    if lw > 0 and cx - lw / 2 < margin:
-        cx = margin + lw / 2
-    box = (
-        cx - lw / 2,
-        cy - lh_total / 2,
-        cx + lw / 2,
-        cy + lh_total / 2,
-    )
+    cx, cy, box = best
     placed_label_boxes.append(box)
     return cx, cy
 
@@ -844,7 +864,7 @@ def render_svg_string(
                     margin,  # ← NEW
                 )
             else:
-                curve_amount = 40
+                curve_amount = 40  # must match _bezier_vertical default
                 cx, cy = _place_curved_edge_label(
                     x1, y1, x2, y2,
                     curve_amount,
@@ -853,7 +873,7 @@ def render_svg_string(
                     font_size,
                     node_boxes,
                     placed_label_boxes,
-                    margin,  # ← NEW
+                    margin,
                 )
 
             fs = font_size - 2
