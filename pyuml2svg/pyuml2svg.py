@@ -2,17 +2,14 @@
 Pure-Python UML Class Diagram → SVG (Portrait DAG Layout)
 
 Features:
-- Portrait (top-down) DAG/tree layout with no overlaps.
-- Parent centered only over unique children (DAG-safe).
-- Per-line text styling via tuples:
-      ('+ id: UUID', {'color': '#880000', 'weight': 'bold'})
-      ["+ id: UUID", {"color": "#880000", "weight": "bold"}]  # JSON-friendly
-- Grey edges + grey labels with hover effect (label only).
-- Multiplicity labels.
-- Default box fill = light grey (#f5f5f5) unless overridden.
-- Edge labels can contain '\n' (multiline) and, for straight edges,
-  are placed outside the edge using the label's bounding box, preferring
-  to be to the right of the edge when possible.
+- Portrait DAG layout with no overlaps.
+- Parents centered only over unique children (DAG-aware).
+- Per-line styled text for attributes/methods.
+- Straight-edge labels:
+    - vertically between the two boxes,
+    - pushed to the right until they don't overlap the edge or boxes.
+- Multiplicity labels placed locally near their endpoints.
+- Grey edges & labels with hover highlighting.
 """
 
 from dataclasses import dataclass, field
@@ -43,7 +40,7 @@ class UMLRelation:
 
 
 # ======================================================
-# Utility for per-line styled text
+# Text helpers
 # ======================================================
 
 def _parse_text_entry(entry):
@@ -51,17 +48,16 @@ def _parse_text_entry(entry):
     Accepts:
         'text'
         ('text', {style})
-        ["text", {style}]  <-- JSON-compatible form
-    Ensures the returned text is always a string.
+        ['text', {style}]
+    Returns (text, style_dict).
     """
     if (
         isinstance(entry, (tuple, list))
         and len(entry) == 2
-        and isinstance(entry[1], dict)
         and isinstance(entry[0], str)
+        and isinstance(entry[1], dict)
     ):
         return entry[0], entry[1]
-
     return str(entry), {}
 
 
@@ -69,7 +65,7 @@ def _parse_text_entry(entry):
 # Layout helpers
 # ======================================================
 
-def _compute_box_size(cls: UMLClass, font_size: int, char_width: float, line_height: int):
+def _compute_box_size(cls, font_size, char_width, line_height):
     lines = [cls.name]
 
     for a in cls.attributes:
@@ -94,7 +90,6 @@ def _compute_box_size(cls: UMLClass, font_size: int, char_width: float, line_hei
     return {
         'width': width,
         'height': h,
-        'name_lines': 1,
         'attr_lines': len(cls.attributes),
         'method_lines': len(cls.methods),
     }
@@ -119,17 +114,17 @@ def _find_roots(classes, parents):
 
 def _compute_depths(roots, children, names):
     depths = {n: None for n in names}
-    queue = [(r, 0) for r in roots]
+    q = [(r, 0) for r in roots]
 
     for r in roots:
         depths[r] = 0
 
-    while queue:
-        node, d = queue.pop(0)
+    while q:
+        node, d = q.pop(0)
         for ch in children[node]:
             if depths[ch] is None or depths[ch] < d + 1:
                 depths[ch] = d + 1
-                queue.append((ch, d + 1))
+                q.append((ch, d + 1))
 
     for n in depths:
         if depths[n] is None:
@@ -147,6 +142,12 @@ def _layout_tree(
     margin,
     line_height,
 ):
+    """
+    DAG-aware portrait layout:
+    - Build full parent/child graph.
+    - Extract "layout tree" with unique-parent edges.
+    - Layout each tree compactly; remaining nodes left→right.
+    """
     name_to_class = {c.name: c for c in classes}
     char_width = font_size * 0.60
 
@@ -160,58 +161,84 @@ def _layout_tree(
     depths = _compute_depths(roots, children, list(name_to_class.keys()))
 
     layout = {
-        name: {
-            **sizes[name],
-            'x': None,
-            'y': None,
-            'depth': depths[name],
-        }
+        name: {**sizes[name], 'x': None, 'y': None, 'depth': depths[name]}
         for name in name_to_class
     }
 
-    next_x = margin
+    # DAG-aware tree edges: child with exactly one parent
+    tree_children = {n: [] for n in name_to_class}
+    tree_parents  = {n: None for n in name_to_class}
+
+    for p, chs in children.items():
+        for ch in chs:
+            if len(parents[ch]) == 1:
+                tree_children[p].append(ch)
+                tree_parents[ch] = p
+
+    tree_roots = [n for n in name_to_class if tree_parents[n] is None]
+    if not tree_roots:
+        tree_roots = list(name_to_class.keys())
+
     visited = set()
+    next_x = margin
 
-    def layout_node(name: str):
+    def layout_subtree(root, start_x):
         nonlocal next_x
-        if name in visited:
-            return
-        visited.add(name)
+        local_next_x = 0.0
+        nodes = set()
 
-        chs = children[name]
-        for c in chs:
-            layout_node(c)
+        def dfs(node):
+            nonlocal local_next_x
+            if node in nodes:
+                return
+            nodes.add(node)
 
-        unique_children = [c for c in chs if len(parents[c]) == 1]
+            chs = tree_children[node]
+            for c in chs:
+                dfs(c)
 
-        if unique_children:
-            centers = [
-                layout[c]['x'] + layout[c]['width'] / 2
-                for c in unique_children
-            ]
-            centers.sort()
-            median_center = centers[len(centers) // 2]  # integer index, middle element
-            layout[name]['x'] = median_center - layout[name]['width'] / 2
-        else:
-            if layout[name]['x'] is None:
-                layout[name]['x'] = next_x
-                next_x += layout[name]['width'] + horizontal_spacing
+            if chs:
+                centers = [layout[c]['x'] + layout[c]['width'] / 2 for c in chs]
+                centers.sort()
+                median = centers[len(centers) // 2]
+                layout[node]['x'] = median - layout[node]['width'] / 2
+            else:
+                layout[node]['x'] = local_next_x
+                local_next_x += layout[node]['width'] + horizontal_spacing
 
-    for r in roots:
-        layout_node(r)
+        dfs(root)
 
-    for name in name_to_class:
-        if name not in visited:
-            layout_node(name)
+        # Normalize subtree so left edge = start_x
+        min_x = min(layout[n]['x'] for n in nodes)
+        shift = start_x - min_x
+        for n in nodes:
+            layout[n]['x'] += shift
 
+        rightmost = max(layout[n]['x'] + layout[n]['width'] for n in nodes)
+        visited.update(nodes)
+        next_x = rightmost + horizontal_spacing
+
+    # Layout each tree root
+    for r in tree_roots:
+        if r not in visited:
+            layout_subtree(r, next_x)
+
+    # Remaining nodes (multi-parent / disconnected)
+    for n in name_to_class:
+        if n not in visited:
+            layout[n]['x'] = next_x
+            next_x += layout[n]['width'] + horizontal_spacing
+
+    # Shift if needed to maintain margin
     min_x = min(info['x'] for info in layout.values())
     if min_x < margin:
         shift = margin - min_x
         for info in layout.values():
             info['x'] += shift
 
+    # Vertical placement by depth
     max_h = max(info['height'] for info in layout.values())
-    for name, info in layout.items():
+    for n, info in layout.items():
         info['y'] = margin + info['depth'] * (max_h + vertical_spacing)
 
     return layout, char_width
@@ -219,18 +246,16 @@ def _layout_tree(
 
 def _connected_components(classes, relations):
     """
-    Returns a list of connected components, each a set of class names.
+    Returns connected components as sets of class names.
     """
-    # Build undirected adjacency
     adj = {c.name: set() for c in classes}
-
     for r in relations:
         if r.source in adj and r.target in adj:
             adj[r.source].add(r.target)
             adj[r.target].add(r.source)
 
     visited = set()
-    components = []
+    comps = []
 
     for node in adj:
         if node in visited:
@@ -245,131 +270,141 @@ def _connected_components(classes, relations):
                     visited.add(nxt)
                     comp.add(nxt)
                     stack.append(nxt)
-        components.append(comp)
-    return components
+        comps.append(comp)
+    return comps
 
 
 # ======================================================
-# SVG helpers
+# Geometry & collision helpers
 # ======================================================
 
-def _bezier_vertical(x1, y1, x2, y2, curve_amount=40):
+def _bezier_vertical(x1, y1, x2, y2, curve=40):
     mid_y = (y1 + y2) / 2
-    ctrl_x = (x1 + x2) / 2
-    ctrl_y = mid_y - curve_amount
-    return f'M{x1},{y1} Q{ctrl_x},{ctrl_y} {x2},{y2}'
+    return f'M{x1},{y1} Q{(x1+x2)/2},{mid_y-curve} {x2},{y2}'
 
 
-# --------- label placement helper for straight edges ---------
-
-def _boxes_collide(box, boxes):
-    """Axis-aligned bbox collision checker."""
+def _boxes_collide(box, boxes, pad=2.0, eps=0.5):
+    """
+    Robust AABB collision check (touching counts as collision).
+    Used for edge-label vs. node/label collision.
+    """
     x1, y1, x2, y2 = box
+    x1 -= pad
+    y1 -= pad
+    x2 += pad
+    y2 += pad
+
     for ax1, ay1, ax2, ay2 in boxes:
-        if x1 < ax2 and x2 > ax1 and y1 < ay2 and y2 > ay1:
+        ax1 -= pad
+        ay1 -= pad
+        ax2 += pad
+        ay2 += pad
+        if (x1 <= ax2 + eps and x2 >= ax1 - eps and
+            y1 <= ay2 + eps and y2 >= ay1 - eps):
             return True
     return False
 
 
-def _place_label_straight_edge(
+def _line_intersects_box(x1, y1, x2, y2, box):
+    """
+    Check if a line segment intersects or passes through a box.
+    Used to keep straight-edge labels off the edge line.
+    """
+    bx1, by1, bx2, by2 = box
+
+    # Quick reject if line is entirely to one side
+    if max(x1, x2) < bx1 or min(x1, x2) > bx2:
+        return False
+    if max(y1, y2) < by1 or min(y1, y2) > by2:
+        return False
+
+    def seg_intersects(ax, ay, bx, by, cx, cy, dx, dy):
+        def ccw(p, q, r):
+            return (r[1] - p[1]) * (q[0] - p[0]) > (q[1] - p[1]) * (r[0] - p[0])
+        A, B = (ax, ay), (bx, by)
+        C, D = (cx, cy), (dx, dy)
+        return ccw(A, C, D) != ccw(B, C, D) and ccw(A, B, C) != ccw(A, B, D)
+
+    return (
+        seg_intersects(x1, y1, x2, y2, bx1, by1, bx2, by1) or  # top
+        seg_intersects(x1, y1, x2, y2, bx1, by2, bx2, by2) or  # bottom
+        seg_intersects(x1, y1, x2, y2, bx1, by1, bx1, by2) or  # left
+        seg_intersects(x1, y1, x2, y2, bx2, by1, bx2, by2)     # right
+    )
+
+
+def _place_straight_edge_label(
     x1, y1, x2, y2,
-    label_width, label_height,
-    node_boxes,       # dict of name -> (x1,y1,x2,y2)
-    existing_labels,  # list of (x1,y1,x2,y2)
+    source_box, target_box,
+    lines,
+    char_width,
+    font_size,
+    node_boxes,
+    placed_label_boxes,
 ):
     """
-    Place a label for a straight edge based on the label's bbox.
-
-    Preference order:
-    1) Right of the edge
-    2) Above the edge
-    3) Below the edge
-    4) Left of the edge
-
-    Avoids overlap with node boxes and previously placed labels.
+    Place label for a straight edge:
+    - vertically between the source and target boxes,
+    - horizontally to the right of the edge,
+    - shifted right until it doesn't overlap the edge or nodes/labels.
     """
+    sx, sy, sw, sh = source_box
+    tx, ty, tw, th = target_box
 
-    dx = x2 - x1
-    dy = y2 - y1
-    length = (dx * dx + dy * dy) ** 0.5 or 1.0
+    # Vertical midpoint between boxes
+    source_bottom = sy + sh
+    target_top = ty
+    cy = (source_bottom + target_top) / 2
 
-    # Unit vector along the edge
-    ex = dx / length
-    ey = dy / length
-    # Unit perpendicular (right-hand normal)
-    # Correct "right of edge" for screen coordinates (y increases downward)
-    px = dy / length
-    py = -dx / length
+    # Edge direction & right-hand perpendicular
+    vx = x2 - x1
+    vy = y2 - y1
+    L = (vx * vx + vy * vy) ** 0.5 or 1.0
+    ex = vx / L
+    ey = vy / L
+    px = ey
+    py = -ex
 
-    # Edge midpoint
-    mx = (x1 + x2) / 2.0
-    my = (y1 + y2) / 2.0
+    # Text dimensions
+    fs = font_size - 2
+    lh = fs
+    max_chars = max(len(line) for line in lines) if lines else 0
+    lw = max_chars * char_width
+    lh_total = lh * max(1, len(lines))
 
-    # Helper to build bbox from center coordinates
-    def bbox_from_center(cx, cy):
-        return (
-            cx - label_width / 2.0,
-            cy - label_height / 2.0,
-            cx + label_width / 2.0,
-            cy + label_height / 2.0,
+    # Initial candidate: to the right of the edge's midpoint
+    base_cx = (x1 + x2) / 2
+    offset = 20.0
+
+    for _ in range(12):
+        cx = base_cx + px * offset
+        box = (
+            cx - lw / 2,
+            cy - lh_total / 2,
+            cx + lw / 2,
+            cy + lh_total / 2,
         )
+        if (not _line_intersects_box(x1, y1, x2, y2, box)
+            and not _boxes_collide(box, node_boxes.values())
+            and not _boxes_collide(box, placed_label_boxes)):
+            placed_label_boxes.append(box)
+            return cx, cy
+        offset += 6.0
 
-    # Candidate centers (not top-left), in priority order
-    # Right-of-edge: move a bit along the edge and to the right side
-    right_center = (
-        mx + ex * 20 + px * (label_width / 2.0 + 12),
-        my + ey * 20 + py * (label_width / 2.0 + 12),
+    # Fallback: use last attempt
+    cx = base_cx + px * offset
+    box = (
+        cx - lw / 2,
+        cy - lh_total / 2,
+        cx + lw / 2,
+        cy + lh_total / 2,
     )
-
-    # Above edge: move perpendicular in +normal direction
-    above_center = (
-        mx + px * (label_height + 10),
-        my + py * (label_height + 10),
-    )
-
-    # Below edge: move perpendicular in -normal direction
-    below_center = (
-        mx - px * (label_height + 10),
-        my - py * (label_height + 10),
-    )
-
-    # Left-of-edge: opposite of right-of-edge
-    left_center = (
-        mx - ex * 20 - px * (label_width / 2.0 + 12),
-        my - ey * 20 - py * (label_width / 2.0 + 12),
-    )
-
-    candidates = [
-        right_center,
-        above_center,
-        below_center,
-        left_center,
-    ]
-
-    all_node_boxes = list(node_boxes.values())
-
-    for cx, cy in candidates:
-        box = bbox_from_center(cx, cy)
-        if _boxes_collide(box, all_node_boxes):
-            continue
-        if _boxes_collide(box, existing_labels):
-            continue
-        existing_labels.append(box)
-        # Return top-left coordinates for text anchor "middle"/"start" handling
-        # We'll use the center's y as baseline for first line, so convert:
-        x_left, y_top, _, _ = box
-        # For the SVG <text>, x is center, y is baseline. We'll pass center.x, baseline.y
-        return cx, cy - label_height / 2.0 + (label_height / max(1, label_height)) * 0.0
-
-    # Fallback: use right-of-edge even if overlapping
-    cx, cy = right_center
-    box = bbox_from_center(cx, cy)
-    existing_labels.append(box)
-    return cx, cy - label_height / 2.0
+    placed_label_boxes.append(box)
+    return cx, cy
 
 
 # ======================================================
-# Main renderers
+# Main renderer
 # ======================================================
 
 def render_svg_string(
@@ -383,236 +418,192 @@ def render_svg_string(
     horizontal_spacing=60,
     margin=40,
 ) -> str:
-    """
-    Returns the SVG described by the classes and relations as a string.
-
-    Use inside web applications or other Python code.
-    """
     if line_height is None:
         line_height = int(font_size * 1.4)
 
     layout, char_width = _layout_tree(
         classes, relations, font_size,
         vertical_spacing, horizontal_spacing,
-        margin, line_height,
+        margin, line_height
     )
 
-    # Identify disconnected components
     components = _connected_components(classes, relations)
-    main_component = max(components, key=len)
+    main = max(components, key=len) if components else set()
+    is_disconnected = {c.name: (c.name not in main) for c in classes}
 
-    is_disconnected = {
-        cls.name: (cls.name not in main_component)
-        for cls in classes
-    }
-
-    width  = max(info['x'] + info['width'] + margin for info in layout.values())
+    width  = max(info['x'] + info['width']  + margin for info in layout.values())
     height = max(info['y'] + info['height'] + margin for info in layout.values())
 
-    parts = []
-    parts.append(
-        f'<svg xmlns="http://www.w3.org/2000/svg" '
-        f'width="{width}" height="{height}" '
-        f'font-family="{html.escape(font_family)}" '
-        f'font-size="{font_size}">'
-    )
-
-    parts.append('''
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+             f'font-family="{html.escape(font_family)}" font-size="{font_size}">', """
     <defs>
-        <marker id='arrow' markerWidth='10' markerHeight='10'
-                refX='9' refY='5' orient='auto'>
-          <polygon points='0,0 10,5 0,10' fill='black' />
-        </marker>
+      <marker id="arrow" markerWidth="10" markerHeight="10"
+              refX="9" refY="5" orient="auto">
+        <polygon points="0,0 10,5 0,10" fill="black" />
+      </marker>
     </defs>
 
     <style>
-        .edge-line {
-            stroke: #888;
-            stroke-width: 1;
-            transition: stroke 0.15s, stroke-width 0.15s;
-        }
-    
-        .edge-label {
-            fill: #888;
-            transition: fill 0.15s, font-weight 0.15s;
-        }
-    
-        /* Hover effect for BOTH label and line */
-        .edge-group:hover .edge-label {
-            fill: #000;
-            font-weight: bold;
-        }
-    
-        .edge-group:hover .edge-line {
-            stroke: #444;        /* slightly darker */
-            stroke-width: 2;     /* slightly thicker */
-        }
+      .edge-line { stroke:#888; stroke-width:1; transition:stroke 0.15s, stroke-width 0.15s; }
+      .edge-label { fill:#888; transition:fill 0.15s, font-weight 0.15s; }
+
+      .edge-group:hover .edge-label {
+        fill:#000;
+        font-weight:bold;
+      }
+
+      .edge-group:hover .edge-line {
+        stroke:#444;
+        stroke-width:2;
+      }
     </style>
-    ''')
+    """]
 
-    children, _parents = _build_graph(classes, relations)
-    child_counts = {n: len(chs) for n, chs in children.items()}
+    children, _ = _build_graph(classes, relations)
 
-    # Precompute node bounding boxes for label-placement collision checks
-    node_boxes = {}
-    for cls in classes:
-        info = layout[cls.name]
-        x1 = info['x']
-        y1 = info['y']
-        x2 = x1 + info['width']
-        y2 = y1 + info['height']
-        node_boxes[cls.name] = (x1, y1, x2, y2)
+    # Node boxes for collision checks (edge labels only)
+    node_boxes = {
+        c.name: (
+            layout[c.name]['x'],
+            layout[c.name]['y'],
+            layout[c.name]['x'] + layout[c.name]['width'],
+            layout[c.name]['y'] + layout[c.name]['height'],
+        )
+        for c in classes
+    }
+    placed_label_boxes = []
 
-    placed_label_boxes = []  # bboxes of labels (straight-edge case only for now)
-
-    # -----------------------
+    # --------------------------------------------------
     # Edges
-    # -----------------------
+    # --------------------------------------------------
     for r in relations:
         if r.source not in layout or r.target not in layout:
             continue
 
-        s = layout[r.source]
-        t = layout[r.target]
+        s_info = layout[r.source]
+        t_info = layout[r.target]
 
-        # Determine better exit point based on child horizontal position
-        px = s['x']
-        py = s['y']
-        pw = s['width']
-        ph = s['height']
+        sx, sy, sw, sh = s_info['x'], s_info['y'], s_info['width'], s_info['height']
+        tx, ty, tw, th = t_info['x'], t_info['y'], t_info['width'], t_info['height']
 
-        cx = t['x']
-        cy = t['y']
-        cw = t['width']
-        ch = t['height']
+        s_center = sx + sw / 2
+        t_center = tx + tw / 2
+        dx = t_center - s_center
+        side_limit = sw * 0.2
 
-        pcenter = px + pw / 2
-        ccenter = cx + cw / 2
-        dx = ccenter - pcenter
-
-        side_threshold = pw * 0.2  # tweakable
-
-        if dx > side_threshold:
-            # exit right
-            x1 = px + pw
-            y1 = py + ph / 2
-        elif dx < -side_threshold:
-            # exit left
-            x1 = px
-            y1 = py + ph / 2
+        # Exit point from source box
+        if dx > side_limit:
+            x1 = sx + sw
+            y1 = sy + sh / 2
+        elif dx < -side_limit:
+            x1 = sx
+            y1 = sy + sh / 2
         else:
-            # exit bottom center
-            x1 = pcenter
-            y1 = py + ph
-        x2 = t['x'] + t['width'] / 2
-        y2 = t['y']
+            x1 = s_center
+            y1 = sy + sh
 
-        group_class = f'edge-group edge-r-{r.source}-{r.target}'
-        parts.append(f'<g class="{group_class}">')
+        # Entry at top center of target box
+        x2 = tx + tw / 2
+        y2 = ty
 
-        # Determine whether to draw straight or Bezier
-        child_list = children[r.source]
-        count = len(child_list)
+        # Edge direction & right-hand perpendicular
+        vx = x2 - x1
+        vy = y2 - y1
+        L = (vx * vx + vy * vy) ** 0.5 or 1.0
+        ex = vx / L
+        ey = vy / L
+        px = ey
+        py = -ex
 
-        # Default: same as before (straight only if one child)
-        is_straight = (count == 1)
+        parts.append(f'<g class="edge-group edge-r-{r.source}-{r.target}">')
 
-        if count == 3:
-            # Order children by horizontal position
-            child_positions = [
-                (layout[ch]['x'] + layout[ch]['width'] / 2, ch)
-                for ch in child_list
-            ]
-            child_positions.sort(key=lambda x: x[0])  # left → right
-            ordered_children = [name for (_, name) in child_positions]
-
-            left, middle, right = ordered_children
-
-            # Middle child gets straight line
-            if r.target == middle:
-                is_straight = True
-            else:
-                is_straight = False
+        # Straight vs Bezier
+        chs = children[r.source]
+        if len(chs) == 3:
+            # For three children, only the horizontal middle gets straight
+            mid = sorted(
+                ((layout[ch]['x'] + layout[ch]['width'] / 2, ch) for ch in chs),
+                key=lambda p: p[0]
+            )[1][1]
+            is_straight = (r.target == mid)
+        else:
+            is_straight = (len(chs) == 1)
 
         if is_straight:
             parts.append(
-                f'<line class="edge-line" '
-                f'x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
-                f'marker-end="url(#arrow)" />'
+                f'<line class="edge-line" x1="{x1}" y1="{y1}" '
+                f'x2="{x2}" y2="{y2}" marker-end="url(#arrow)" />'
             )
         else:
-            d = _bezier_vertical(x1, y1, x2, y2)
+            path = _bezier_vertical(x1, y1, x2, y2)
             parts.append(
-                f'<path class="edge-line" d="{d}" fill="none" '
+                f'<path class="edge-line" d="{path}" fill="none" '
                 f'marker-end="url(#arrow)" />'
             )
 
         # Edge labels
         if r.label:
-            lines = str(r.label).split("\n")
-            label_font_size = font_size - 2
-            label_line_height = label_font_size  # same as dy we use below
-
-            # Compute label bbox size (approx) for collision detection
-            max_chars = max(len(line) for line in lines) if lines else 0
-            label_width = max_chars * char_width
-            label_height = max(1, len(lines)) * label_line_height
-
+            lines = r.label.split('\n')
             if is_straight:
-                # Use bbox-based placement for straight edges
-                cx, cy = _place_label_straight_edge(
+                cx, cy = _place_straight_edge_label(
                     x1, y1, x2, y2,
-                    label_width, label_height,
+                    (sx, sy, sw, sh),
+                    (tx, ty, tw, th),
+                    lines,
+                    char_width,
+                    font_size,
                     node_boxes,
                     placed_label_boxes,
                 )
-                lx = cx  # text anchor will be "middle"
-                ly = cy
             else:
-                # Original behavior for curved edges: offset from midpoint
+                # Simple mid-perpendicular for curved edges
                 mx = (x1 + x2) / 2
                 my = (y1 + y2) / 2
-                dx = x2 - x1
-                dy = y2 - y1
-                length = (dx * dx + dy * dy) ** 0.5 or 1
-                px = -dy / length
-                py = dx / length
-                offset = 10
-                lx = mx + px * offset
-                ly = my + py * offset
+                cx = mx + (-ey) * 10
+                cy = my + ex * 10
 
+            fs = font_size - 2
+            lh = fs
             parts.append(
-                f'<text class="edge-label" x="{lx}" y="{ly}" '
-                f'text-anchor="middle" font-size="{label_font_size}">'
+                f'<text class="edge-label" x="{cx}" y="{cy}" '
+                f'text-anchor="middle" font-size="{fs}">'
             )
-            # First line
-            if lines:
-                parts.append(html.escape(lines[0]))
-                # Additional lines
-                for line in lines[1:]:
-                    parts.append(
-                        f'<tspan x="{lx}" dy="{label_line_height}">'
-                        f'{html.escape(line)}</tspan>'
-                    )
+            parts.append(html.escape(lines[0]))
+            for line in lines[1:]:
+                parts.append(f'<tspan x="{cx}" dy="{lh}">{html.escape(line)}</tspan>')
             parts.append('</text>')
 
+        # Multiplicities (simple, local placement: along edge, then right)
+        along = 10
+        perp = 12
+
         if r.source_multiplicity:
+            sxm = x1 + ex * along
+            sym = y1 + ey * along
+            mx = sxm + px * perp
+            my = sym + py * perp
             parts.append(
-                f'<text class="edge-label" x="{x1}" y="{y1 + 15}" '
+                f'<text class="edge-label" x="{mx}" y="{my}" '
                 f'text-anchor="middle" font-size="{font_size - 2}">'
                 f'{html.escape(r.source_multiplicity)}</text>'
             )
+
         if r.target_multiplicity:
+            txm = x2 - ex * along
+            tym = y2 - ey * along
+            mx = txm + px * perp
+            my = tym + py * perp
             parts.append(
-                f'<text class="edge-label" x="{x2}" y="{y2 - 5}" '
+                f'<text class="edge-label" x="{mx}" y="{my}" '
                 f'text-anchor="middle" font-size="{font_size - 2}">'
                 f'{html.escape(r.target_multiplicity)}</text>'
             )
+
         parts.append('</g>')
 
-    # -----------------------
+    # --------------------------------------------------
     # Nodes
-    # -----------------------
+    # --------------------------------------------------
     for cls in classes:
         info = layout[cls.name]
         x, y = info['x'], info['y']
@@ -620,86 +611,87 @@ def render_svg_string(
 
         fill = cls.style.get('fill', '#f5f5f5')
         base_color = cls.style.get('text', '#000')
+
         if is_disconnected[cls.name]:
             stroke = cls.style.get('stroke', 'red')
-            stroke_width = cls.style.get('stroke_width', '2')
+            sw = cls.style.get('stroke_width', '2')
         else:
             stroke = cls.style.get('stroke', '#000')
-            stroke_width = cls.style.get('stroke_width', '1')
+            sw = cls.style.get('stroke_width', '1')
 
         parts.append(
             f'<rect x="{x}" y="{y}" width="{w}" height="{h}" '
-            f'rx="4" ry="4" fill="{fill}" stroke="{stroke}" '
-            f'stroke-width="{stroke_width}" />'
+            f'rx="4" ry="4" fill="{fill}" stroke="{stroke}" stroke-width="{sw}" />'
         )
 
-        cx = x + w/2
+        # Class name
+        cx = x + w / 2
         cy = y + 2 + line_height
-
         parts.append(
             f'<text x="{cx}" y="{cy}" text-anchor="middle" '
-            f'font-weight="bold" fill="{base_color}">'
-            f'{html.escape(cls.name)}</text>'
+            f'font-weight="bold" fill="{base_color}">{html.escape(cls.name)}</text>'
         )
 
-        divider_y = y + 10 + line_height + 3
+        # Divider between header and attributes/methods
+        divider = y + 10 + line_height + 3
         if info['attr_lines'] or info['method_lines']:
             parts.append(
-                f'<line x1="{x}" y1="{divider_y}" x2="{x+w}" y2="{divider_y}" '
-                f'stroke="{stroke}" />'
+                f'<line x1="{x}" y1="{divider}" x2="{x+w}" y2="{divider}" stroke="{stroke}" />'
             )
 
-        cy = divider_y + line_height
+        cy = divider + line_height
 
+        # Attributes
         for entry in cls.attributes:
             text, sty = _parse_text_entry(entry)
             weight = sty.get('weight', 'normal')
-            style = sty.get('style', 'normal')
-            color = sty.get('color', base_color)
-            size  = sty.get('size')
-            fam   = sty.get('family')
-            anchor= sty.get('anchor', 'start')
+            style  = sty.get('style', 'normal')
+            color  = sty.get('color', base_color)
+            size   = sty.get('size')
+            fam    = sty.get('family')
+            anchor = sty.get('anchor', 'start')
 
-            stylebits = []
-            if size:  stylebits.append(f'font-size="{size}"')
-            if fam:   stylebits.append(f'font-family="{html.escape(fam)}"')
+            bits = []
+            if size:
+                bits.append(f'font-size="{size}"')
+            if fam:
+                bits.append(f'font-family="{html.escape(fam)}"')
 
             parts.append(
-                f'<text x="{x + 10}" y="{cy}" '
-                f'{" ".join(stylebits)} '
+                f'<text x="{x+10}" y="{cy}" {" ".join(bits)} '
                 f'font-weight="{weight}" font-style="{style}" '
-                f'text-anchor="{anchor}" fill="{color}">'
-                f'{html.escape(text)}</text>'
+                f'text-anchor="{anchor}" fill="{color}">{html.escape(text)}</text>'
             )
             cy += line_height
 
+        # Divider between attributes and methods
         if info['attr_lines'] and info['method_lines']:
-            div2 = cy - line_height/2
+            mid = cy - line_height / 2
             parts.append(
-                f"<line x1='{x}' y1='{div2}' x2='{x + w}' y2='{div2}' "
-                f"stroke='{stroke}' />"
+                f"<line x1='{x}' y1='{mid}' x2='{x+w}' y2='{mid}' stroke='{stroke}' />"
             )
-            cy = div2 + line_height
+            cy = mid + line_height
 
+        # Methods
         for entry in cls.methods:
             text, sty = _parse_text_entry(entry)
             weight = sty.get('weight', 'normal')
-            style = sty.get('style', 'normal')
-            color = sty.get('color', base_color)
-            size  = sty.get('size')
-            fam   = sty.get('family')
-            anchor= sty.get('anchor', 'start')
+            style  = sty.get('style', 'normal')
+            color  = sty.get('color', base_color)
+            size   = sty.get('size')
+            fam    = sty.get('family')
+            anchor = sty.get('anchor', 'start')
 
-            stylebits = []
-            if size:  stylebits.append(f"font-size='{size}'")
-            if fam:   stylebits.append(f"font-family='{html.escape(fam)}'")
+            bits = []
+            if size:
+                bits.append(f"font-size='{size}'")
+            if fam:
+                bits.append(f"font-family='{html.escape(fam)}'")
 
             parts.append(
-                f'<text x="{x + 10}" y="{cy}" '
-                f'{" ".join(stylebits)} '
+                f'<text x="{x+10}" y="{cy}" {" ".join(bits)} '
                 f'font-weight="{weight}" font-style="{style}" '
-                f'text-anchor="{anchor}" fill="{color}">'
-                f'{html.escape(text)}</text>'
+                f'text-anchor="{anchor}" fill="{color}">{html.escape(text)}</text>'
             )
             cy += line_height
 
@@ -708,21 +700,14 @@ def render_svg_string(
 
 
 # ======================================================
-# File-writing wrapper for CLI use
+# File writer
 # ======================================================
 
-def render_svg(
-    classes: List[UMLClass],
-    relations: List[UMLRelation],
-    filename: str,
-    **kwargs,
-):
+def render_svg(classes, relations, filename, **kwargs):
     """
-    Writes SVG to a file. Wrapper around render_svg_string().
-    Kept for script/CLI compatibility.
+    Convenience wrapper: write SVG to a file.
     """
     svg = render_svg_string(classes, relations, **kwargs)
-
     with open(filename, 'w', encoding='utf-8') as f:
         f.write(svg)
 
