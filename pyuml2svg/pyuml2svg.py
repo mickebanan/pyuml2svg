@@ -804,13 +804,9 @@ def render_svg_string(
     main = max(components, key=len) if components else set()
     is_disconnected = {c.name: (c.name not in main) for c in classes}
 
-    width  = max(info['x'] + info['width']  + margin for info in layout.values())
     height = max(info['y'] + info['height'] + margin for info in layout.values())
 
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'font-family="{html.escape(font_family)}" font-size="{font_size}" '
-        f'xmlns:xlink="http://www.w3.org/1999/xlink">',
         """
     <!-- ================================================================ -->
     <!--                   UML Arrowhead Definitions                      -->
@@ -1042,8 +1038,13 @@ def render_svg_string(
         fill = cls.style.get('fill', '#f5f5f5')
         base_color = cls.style.get('text', '#000')
 
-        stroke = cls.style.get('stroke', '#000')
-        swidth = cls.style.get('stroke_width', '1')
+        if is_disconnected[cls.name]:
+            # Highlight disconnected nodes
+            stroke = cls.style.get('stroke', 'red')
+            swidth = cls.style.get('stroke_width', '2')
+        else:
+            stroke = cls.style.get('stroke', '#000')
+            swidth = cls.style.get('stroke_width', '1')
 
         parts.append(f'<g id="class-{cls.name}" class="uml-class collapsible-visible">')
 
@@ -1132,7 +1133,21 @@ def render_svg_string(
             cy += line_height
 
         parts.append("</g>")  # end class group
+    # --------------------------------------------------
+    # Recompute width now that all labels are placed
+    # --------------------------------------------------
 
+    node_right = max(info['x'] + info['width'] for info in layout.values())
+    label_right = max((box[2] for box in placed_label_boxes), default=0)
+    width = max(node_right, label_right) + margin
+    parts[0] %= {'width': width}
+
+    svg_open = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'font-family="{html.escape(font_family)}" font-size="{font_size}" '
+        f'xmlns:xlink="http://www.w3.org/1999/xlink">'
+    )
+    parts.insert(0, svg_open)
     parts.append('<script type="text/ecmascript"><![CDATA[%(js)s]]></script>' % {'js': _load_asset('script.js')})
     parts.append("</svg>")
     return "\n".join(parts)
