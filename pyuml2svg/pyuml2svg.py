@@ -416,12 +416,14 @@ def _place_straight_edge_label(
     font_size,
     node_boxes,
     placed_label_boxes,
+    margin,
 ):
     """
     Place label for a straight edge:
     - vertically between the source and target boxes,
     - horizontally to the right of the edge,
-    - shifted right until it doesn't overlap the edge or nodes/labels.
+    - shifted right until it doesn't overlap the edge or nodes/labels,
+    - and not allowed to spill left of `margin`.
     """
     sx, sy, sw, sh = source_box
     tx, ty, tw, th = target_box
@@ -447,12 +449,16 @@ def _place_straight_edge_label(
     lw = max_chars * char_width
     lh_total = lh * max(1, len(lines))
 
-    # Initial candidate: to the right of the edge's midpoint
     base_cx = (x1 + x2) / 2
     offset = 20.0
 
     for _ in range(12):
         cx = base_cx + px * offset
+
+        # clamp so label doesn't spill left of margin
+        if lw > 0 and cx - lw / 2 < margin:
+            cx = margin + lw / 2
+
         box = (
             cx - lw / 2,
             cy - lh_total / 2,
@@ -466,8 +472,10 @@ def _place_straight_edge_label(
             return cx, cy
         offset += 6.0
 
-    # Fallback: use last attempt
+    # Fallback: last attempt, clamp if needed
     cx = base_cx + px * offset
+    if lw > 0 and cx - lw / 2 < margin:
+        cx = margin + lw / 2
     box = (
         cx - lw / 2,
         cy - lh_total / 2,
@@ -486,6 +494,7 @@ def _place_curved_edge_label(
     font_size,
     node_boxes,
     placed_label_boxes,
+    margin,
 ):
     """
     Place label near a quadratic Bezier curve:
@@ -496,7 +505,10 @@ def _place_curved_edge_label(
     - Evaluate point & tangent at t=0.5
     - Offset along right-hand normal
     - Iteratively push outward until no collisions with nodes/labels.
+    - Ensure label does not spill left of `margin`.
     """
+
+    # Control point matches _bezier_vertical()
     mid_y = (y1 + y2) / 2
     cx_ctrl = (x1 + x2) / 2
     cy_ctrl = mid_y - curve_amount
@@ -529,6 +541,10 @@ def _place_curved_edge_label(
         cx = bx + px * offset
         cy = by + py * offset
 
+        # clamp so label doesn't spill left of margin
+        if lw > 0 and cx - lw / 2 < margin:
+            cx = margin + lw / 2
+
         box = (
             cx - lw / 2,
             cy - lh_total / 2,
@@ -545,9 +561,17 @@ def _place_curved_edge_label(
 
         offset += 6.0
 
-    # Fallback
+    # Fallback: last attempt with clamping
     cx = bx + px * offset
     cy = by + py * offset
+    if lw > 0 and cx - lw / 2 < margin:
+        cx = margin + lw / 2
+    box = (
+        cx - lw / 2,
+        cy - lh_total / 2,
+        cx + lw / 2,
+        cy + lh_total / 2,
+    )
     placed_label_boxes.append(box)
     return cx, cy
 
@@ -659,14 +683,19 @@ def render_svg_string(
     horizontal_spacing=60,
     margin=40,
 ) -> str:
+    """
+    Original render logic + left-spill protection inside label placement
+    (straight + curved edges).
+    No global shifts, no viewport patching, no 2-pass layout.
+    """
 
     if line_height is None:
         line_height = int(font_size * 1.4)
 
     # --------------------------------------------------
-    # PASS 1: Initial layout (no label-aware gaps)
+    # Layout the DAG (original logic)
     # --------------------------------------------------
-    layout1, char_width = _layout_tree(
+    layout, char_width = _layout_tree(
         classes, relations,
         font_size,
         vertical_spacing,
@@ -675,87 +704,45 @@ def render_svg_string(
         line_height,
     )
 
-    # Extract node depths from the first pass
-    depths = {name: info['depth'] for name, info in layout1.items()}
-
-    # --------------------------------------------------
-    # COMPUTE HORIZONTAL & VERTICAL GAPS FOR PASS 2
-    # --------------------------------------------------
-
-    # Vertical gaps (built-in)
-    builtin_vertical_gaps = _compute_label_vertical_gaps(
-        relations, depths, font_size
-    )
-
-    # Horizontal gaps (new)
-    horizontal_gaps = _compute_label_horizontal_gaps(
-        relations,
-        depths,
-        layout1,
-        font_size,
-        char_width,
-    )
-
-    # --------------------------------------------------
-    # PASS 2: Final label-aware layout
-    # --------------------------------------------------
-    layout, char_width = _layout_tree(
-        classes,
-        relations,
-        font_size,
-        vertical_spacing,
-        horizontal_spacing,
-        margin,
-        line_height,
-        horizontal_gaps=horizontal_gaps,
-        vertical_gaps=builtin_vertical_gaps,
-    )
-
-    # --------------------------------------------------
-    # Connected-component highlighting
-    # --------------------------------------------------
+    # Connected components marked with red border
     components = _connected_components(classes, relations)
     main = max(components, key=len) if components else set()
     is_disconnected = {c.name: (c.name not in main) for c in classes}
 
-    # --------------------------------------------------
-    # SVG canvas size
-    # --------------------------------------------------
+    # SVG canvas (based on nodes only; labels will be clamped)
     width  = max(info['x'] + info['width']  + margin for info in layout.values())
     height = max(info['y'] + info['height'] + margin for info in layout.values())
 
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" '
-        f'width="{width}" height="{height}" '
-        f'font-family="{html.escape(font_family)}" font-size="{font_size}">',
+    # --------------------------------------------------
+    # SVG HEADER
+    # --------------------------------------------------
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+             f'font-family="{html.escape(font_family)}" font-size="{font_size}">', """
+    <defs>
+      <marker id="arrow" markerWidth="10" markerHeight="10"
+              refX="9" refY="5" orient="auto">
+        <polygon points="0,0 10,5 0,10" fill="black" />
+      </marker>
+    </defs>
 
-        """
-        <defs>
-          <marker id="arrow" markerWidth="10" markerHeight="10"
-                  refX="9" refY="5" orient="auto">
-            <polygon points="0,0 10,5 0,10" fill="black" />
-          </marker>
-        </defs>
+    <style>
+      .edge-line { stroke:#888; stroke-width:1; transition:stroke 0.15s, stroke-width 0.15s; }
+      .edge-label { fill:#888; transition:fill 0.15s, font-weight 0.15s; }
 
-        <style>
-          .edge-line { stroke:#888; stroke-width:1; transition:stroke 0.15s, stroke-width 0.15s; }
-          .edge-label { fill:#888; transition:fill 0.15s, font-weight 0.15s; }
+      .edge-group:hover .edge-label {
+        fill:#000;
+        font-weight:bold;
+      }
 
-          .edge-group:hover .edge-label {
-            fill:#000;
-            font-weight:bold;
-          }
-
-          .edge-group:hover .edge-line {
-            stroke:#444;
-            stroke-width:2;
-          }
-        </style>
-        """
-    ]
+      .edge-group:hover .edge-line {
+        stroke:#444;
+        stroke-width:2;
+      }
+    </style>
+    """]
 
     # --------------------------------------------------
-    # Prepare node boxes for collision detection
+    # Prepare node-box AABBs (used for label collision avoidance)
     # --------------------------------------------------
     node_boxes = {
         c.name: (
@@ -766,11 +753,10 @@ def render_svg_string(
         )
         for c in classes
     }
+
     placed_label_boxes = []
 
-    # --------------------------------------------------
-    # Build full children map for determining straight edges
-    # --------------------------------------------------
+    # For straight vs curved detection
     children, _ = _build_graph(classes, relations)
 
     # --------------------------------------------------
@@ -791,7 +777,7 @@ def render_svg_string(
         dx = t_center - s_center
         side_limit = sw * 0.2
 
-        # Source exit
+        # Source exit point
         if dx > side_limit:
             x1 = sx + sw
             y1 = sy + sh / 2
@@ -802,11 +788,11 @@ def render_svg_string(
             x1 = s_center
             y1 = sy + sh
 
-        # Target entry (top center)
+        # Target entry
         x2 = tx + tw / 2
         y2 = ty
 
-        # Edge direction → right-hand normal
+        # Direction → right-hand normal
         vx = x2 - x1
         vy = y2 - y1
         L = (vx * vx + vy * vy) ** 0.5 or 1.0
@@ -817,10 +803,9 @@ def render_svg_string(
 
         parts.append(f'<g class="edge-group edge-r-{r.source}-{r.target}">')
 
-        # Straight vs. Bezier
+        # Straight if exactly 1 child, or the middle of 3
         chs = children[r.source]
         if len(chs) == 3:
-            # Only middle child gets straight edge
             mid = sorted(
                 ((layout[ch]['x'] + layout[ch]['width'] / 2, ch) for ch in chs),
                 key=lambda p: p[0]
@@ -842,9 +827,9 @@ def render_svg_string(
                 f'marker-end="url(#arrow)" />'
             )
 
-        # ----------------------------
-        # Edge Labels
-        # ----------------------------
+        # ---------------------------
+        # EDGE LABEL
+        # ---------------------------
         if r.label:
             lines = r.label.split('\n')
             if is_straight:
@@ -857,6 +842,7 @@ def render_svg_string(
                     font_size,
                     node_boxes,
                     placed_label_boxes,
+                    margin,  # ← NEW
                 )
             else:
                 curve_amount = 40
@@ -868,6 +854,7 @@ def render_svg_string(
                     font_size,
                     node_boxes,
                     placed_label_boxes,
+                    margin,  # ← NEW
                 )
 
             fs = font_size - 2
@@ -878,10 +865,12 @@ def render_svg_string(
             )
             parts.append(html.escape(lines[0]))
             for line in lines[1:]:
-                parts.append(f'<tspan x="{cx}" dy="{lh}">{html.escape(line)}</tspan>')
+                parts.append(
+                    f'<tspan x="{cx}" dy="{lh}">{html.escape(line)}</tspan>'
+                )
             parts.append('</text>')
 
-        # Multiplicities
+        # Multiplicities unchanged
         along = 10
         perp = 12
 
@@ -910,7 +899,7 @@ def render_svg_string(
         parts.append('</g>')
 
     # --------------------------------------------------
-    # RENDER NODES
+    # RENDER NODES (unchanged)
     # --------------------------------------------------
     for cls in classes:
         info = layout[cls.name]
@@ -940,11 +929,12 @@ def render_svg_string(
             f'font-weight="bold" fill="{base_color}">{html.escape(cls.name)}</text>'
         )
 
-        # Header divider
+        # dividers + attributes + methods (unchanged)
         divider = y + 10 + line_height + 3
         if info['attr_lines'] or info['method_lines']:
             parts.append(
-                f'<line x1="{x}" y1="{divider}" x2="{x+w}" y2="{divider}" stroke="{stroke}" />'
+                f'<line x1="{x}" y1="{divider}" x2="{x+w}" '
+                f'y2="{divider}" stroke="{stroke}" />'
             )
 
         cy = divider + line_height
@@ -953,26 +943,26 @@ def render_svg_string(
         for entry in cls.attributes:
             text, sty = _parse_text_entry(entry)
             weight = sty.get('weight', 'normal')
-            style  = sty.get('style', 'normal')
-            color  = sty.get('color', base_color)
-            size   = sty.get('size')
-            fam    = sty.get('family')
+            fs = sty.get('size')
+            fam = sty.get('family')
+            style = sty.get('style', 'normal')
+            color = sty.get('color', base_color)
             anchor = sty.get('anchor', 'start')
 
             bits = []
-            if size:
-                bits.append(f'font-size="{size}"')
+            if fs:
+                bits.append(f'font-size="{fs}"')
             if fam:
                 bits.append(f'font-family="{html.escape(fam)}"')
 
             parts.append(
                 f'<text x="{x+10}" y="{cy}" {" ".join(bits)} '
                 f'font-weight="{weight}" font-style="{style}" '
-                f'text-anchor="{anchor}" fill="{color}">{html.escape(text)}</text>'
+                f'text-anchor="{anchor}" fill="{color}">'
+                f'{html.escape(text)}</text>'
             )
             cy += line_height
 
-        # Divider between attributes and methods
         if info['attr_lines'] and info['method_lines']:
             mid = cy - line_height / 2
             parts.append(
@@ -984,22 +974,23 @@ def render_svg_string(
         for entry in cls.methods:
             text, sty = _parse_text_entry(entry)
             weight = sty.get('weight', 'normal')
-            style  = sty.get('style', 'normal')
-            color  = sty.get('color', base_color)
-            size   = sty.get('size')
-            fam    = sty.get('family')
+            fs = sty.get('size')
+            fam = sty.get('family')
+            style = sty.get('style', 'normal')
+            color = sty.get('color', base_color)
             anchor = sty.get('anchor', 'start')
 
             bits = []
-            if size:
-                bits.append(f"font-size='{size}'")
+            if fs:
+                bits.append(f"font-size='{fs}'")
             if fam:
                 bits.append(f"font-family='{html.escape(fam)}'")
 
             parts.append(
                 f'<text x="{x+10}" y="{cy}" {" ".join(bits)} '
                 f'font-weight="{weight}" font-style="{style}" '
-                f'text-anchor="{anchor}" fill="{color}">{html.escape(text)}</text>'
+                f'text-anchor="{anchor}" fill="{color}">'
+                f'{html.escape(text)}</text>'
             )
             cy += line_height
 
