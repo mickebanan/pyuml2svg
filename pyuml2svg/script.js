@@ -37,7 +37,7 @@ function toggleNode(name) {
 
     // Update triangle ▼▶
     if (marker) {
-        marker.textContent = newState ? "▶" : "▼";
+        marker.textContent = newState ? "\u25B6" : "\u25BC";
     }
 
     const edges = document.querySelectorAll(`.edge-group[data-source='${name}']`);
