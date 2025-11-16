@@ -460,16 +460,44 @@ def _line_intersects_box(x1, y1, x2, y2, box):
     )
 
 
-def _orthogonal_path(x1, y1, x2, y2):
+def _orthogonal_path_lanes(
+    x1, y1, x2, y2,
+    sx, sy, sw, sh,
+    idx, total,
+    *,
+    vertical_clearance=12,
+    horizontal_clearance=18,
+):
     """
-    Simple orthogonal (Manhattan) connector:
-        M x1,y1
-        L xm,y1
-        L xm,y2
-        L x2,y2
+    Improved orthogonal routing:
+    - Each edge moves down a little from the parent (vertical_clearance)
+    - Then routes horizontally toward the child's x2
+    - Then drops straight to y2 (entry)
+    - Avoids shared lanes and removes bunching
     """
-    xm = (x1 + x2) / 2
-    return f"M{x1},{y1} L{xm},{y1} L{xm},{y2} L{x2},{y2}"
+
+    # A small vertical drop below the parent's exit point
+    y_down = y1 + vertical_clearance
+
+    # Horizontal target is the child's entry x
+    lane_x = x2
+
+    # If child's x is too close to parent center, push outward slightly
+    parent_center = sx + sw / 2
+    if abs(lane_x - parent_center) < horizontal_clearance:
+        # Spread siblings outward based on index
+        mid = (total - 1) / 2
+        lane_x = parent_center + (idx - mid) * horizontal_clearance
+
+    # Construct Manhattan routing:
+    return (
+        f"M{x1},{y1} "
+        f"L{x1},{y_down} "
+        f"L{lane_x},{y_down} "
+        f"L{lane_x},{y2} "
+        f"L{x2},{y2}"
+    )
+
 
 
 def _place_straight_edge_label(
@@ -897,15 +925,15 @@ def render_svg_string(
                 f'x2="{x2}" y2="{y2}"{ms}{me} />'
             )
         elif use_ortho:
-            d = _orthogonal_path(x1, y1, x2, y2)
-            parts.append(
-                f'<path class="edge-line" d="{d}" fill="none"{ms}{me} />'
+            d = _orthogonal_path_lanes(
+                x1, y1, x2, y2,
+                sx, sy, sw, sh,
+                idx, num,
             )
+            parts.append(f'<path class="edge-line" d="{d}" fill="none"{ms}{me} />')
         else:  # use_bezier
             d = _bezier_vertical(x1, y1, x2, y2, 40)
-            parts.append(
-                f'<path class="edge-line" d="{d}" fill="none"{ms}{me} />'
-            )
+            parts.append(f'<path class="edge-line" d="{d}" fill="none"{ms}{me} />')
 
         # Edge label (unchanged)
         if r.label:
