@@ -166,7 +166,7 @@ def _compute_depths(roots, children, names):
 
 
 def _load_asset(filename):
-    return (files('src.pyuml2svg.assets') / filename).read_text(encoding='utf-8')
+    return (files('pyuml2svg.assets') / filename).read_text(encoding='utf-8')
 
 
 def _layout_tree(

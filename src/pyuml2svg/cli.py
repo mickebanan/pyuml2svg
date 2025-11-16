@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-from src.pyuml2svg import (
+from .pyuml2svg import (
     UMLClass,
     UMLRelation,
     render_svg_string,

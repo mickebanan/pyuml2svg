@@ -1,20 +1,63 @@
 # pyuml2svg
-pyuml2svg is a pure Python UML Class Diagram renderer that outputs SVG with:
 
-- Zero dependencies
-- Clean top-down DAG layout
-- Styled class boxes
-- Hover interactivity (lines + labels)
-- Multiplicity labels
-- Custom per-attribute styling
-- Automatically highlighted disconnected components
-- CLI and library API
-- Embedded-SVG ready for web apps
+**pyuml2svg** is a pure-Python library that generates **UML class diagrams as SVG** with no external dependencies.  
+It performs its own layout, places labels, draws canonical UML relationship arrows, and includes interactive
+collapse/expand controls directly in the SVG.
 
-## Rationale
-I had a need to create custom UML diagrams, but most of the UML generators simply work on your 
-source code instead of arbitrary relations defined by the developer. The ones that do allow arbitrary
-layouts mainly rely on external programs that, albeit powerful, requires extra dependencies that may be unsuitable in
-certain circumstances. Hence pyuml2svg!
+---
 
-Disclaimer: large parts are coded with LLM assistance.
+## Features
+
+- Zero dependencies — pure Python + SVG
+- Automatic portrait DAG layout
+- Collision-aware edge labels
+- Canonical UML markers (inheritance, composition, aggregation, etc.)
+- Interactive collapse/expand of class hierarchies
+- Disconnected-class highlighting
+- Packaged CSS and JavaScript assets (no external files required)
+
+---
+
+## Installation
+
+```bash
+pip install pyuml2svg
+```
+
+## Quick example
+```python
+from pyuml2svg import UMLClass, UMLRelation, render_svg_string
+
+classes = [
+    UMLClass("Animal"),
+    UMLClass("Dog"),
+    UMLClass("Cat"),
+    UMLClass("Spider"),
+]
+
+relations = [
+    UMLRelation("Animal", "Dog", kind="inheritance"),
+    UMLRelation("Animal", "Cat", kind="directed-association"),
+    UMLRelation("Animal", "Spider"),
+]
+
+svg = render_svg_string(classes, relations)
+with open("diagram.svg", "w", encoding="utf-8") as f:
+    f.write(svg)
+
+```
+Open diagram.svg in any browser.
+
+## UML Relationship types
+
+Supported kind values:
+- inheritance
+- realization
+- composition
+- aggregation
+- dependency
+- directed-association
+- association
+- link (plain line)
+
+NB. Some of these are still WIP.
