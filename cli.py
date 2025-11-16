@@ -27,7 +27,7 @@ def load_spec(path: Path):
     try:
         data = json.loads(text)
     except Exception as ex:
-        raise SystemExit(f"[pyuml2svg] JSON parse error: {ex}")
+        raise SystemExit(f'[pyuml2svg] JSON parse error: {ex}')
 
     classes = []
     for c in data.get('classes', []):
@@ -83,7 +83,7 @@ def main():
     # Output SVG
     if args.output:
         Path(args.output).write_text(svg, encoding='utf-8')
-        print(f"[pyuml2svg] Saved UML diagram to '{args.output}'")
+        print(f'[pyuml2svg] Saved UML diagram to {args.output}')
     else:
         sys.stdout.write(svg)
 
