@@ -889,29 +889,78 @@ def render_svg_string(
                 )
             parts.append('</text>')
 
-        # Multiplicities unchanged
-        along = 10
-        perp = 12
-
         if r.source_multiplicity:
-            sxm = x1 + ex * along
-            sym = y1 + ey * along
-            mx = sxm + px * perp
-            my = sym + py * perp
+            # Which side of the source box does this edge exit from?
+            eps = 1e-3
+            source_middle_y = sy + sh / 2
+            source_left = sx
+            source_right = sx + sw
+            text_anchor = 'middle'
+
+            if abs(x1 - source_left) < eps and abs(y1 - source_middle_y) < eps:
+                # Exits from the LEFT side: label to the left of the box
+                mx = x1 - 12
+                my = y1
+            elif abs(x1 - source_right) < eps and abs(y1 - source_middle_y) < eps:
+                # Exits from the RIGHT side: label to the right of the box
+                mx = x1 + 12
+                my = y1
+            else:
+                # Exits from the BOTTOM (or fallback): label just below
+                mx = x1 + 5
+                my = y1 + 12
+                text_anchor = 'left'
+
             parts.append(
                 f'<text class="edge-label" x="{mx}" y="{my}" '
-                f'text-anchor="middle" font-size="{font_size - 2}">'
+                f'text-anchor="{text_anchor}" font-size="{font_size - 2}">'
                 f'{html.escape(r.source_multiplicity)}</text>'
             )
 
         if r.target_multiplicity:
-            txm = x2 - ex * along
-            tym = y2 - ey * along
-            mx = txm + px * perp
-            my = tym + py * perp
+            # Determine sibling order (left/mid/right)
+            siblings = children[r.source]
+
+            # Map each sibling to its horizontal center
+            sib_positions = [
+                (layout[s]['x'] + layout[s]['width'] / 2, s)
+                for s in siblings
+            ]
+            sib_positions.sort()   # left → right
+
+            # Extract just the ordered sibling names
+            ordered = [name for (_, name) in sib_positions]
+
+            # Determine if this target is leftmost, middle, or rightmost
+            if len(ordered) >= 2:
+                if r.target == ordered[0]:
+                    position = "leftmost"
+                elif r.target == ordered[-1]:
+                    position = "rightmost"
+                else:
+                    position = "middle"
+            else:
+                position = "single"
+
+            # Base anchor directly above the target box
+            base_x = x2
+            base_y = ty - 6
+
+            # Horizontal offset based on sibling position
+            # leftmost → offset LEFT
+            # all others → offset RIGHT
+            if position == "leftmost":
+                mx = base_x - 18
+                text_anchor = "right"
+            else:
+                mx = base_x + 6
+                text_anchor = "left"
+
+            my = base_y
+
             parts.append(
                 f'<text class="edge-label" x="{mx}" y="{my}" '
-                f'text-anchor="middle" font-size="{font_size - 2}">'
+                f'text-anchor="{text_anchor}" font-size="{font_size - 2}">'
                 f'{html.escape(r.target_multiplicity)}</text>'
             )
 
