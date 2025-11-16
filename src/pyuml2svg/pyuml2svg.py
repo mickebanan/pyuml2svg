@@ -465,39 +465,87 @@ def _orthogonal_path_lanes(
     sx, sy, sw, sh,
     idx, total,
     *,
-    vertical_clearance=12,
-    horizontal_clearance=18,
+    gap=10,
+    lane_spacing=10,
 ):
     """
-    Improved orthogonal routing:
-    - Each edge moves down a little from the parent (vertical_clearance)
-    - Then routes horizontally toward the child's x2
-    - Then drops straight to y2 (entry)
-    - Avoids shared lanes and removes bunching
+    Simple, mostly overlap-free orthogonal routing.
+
+    - Bottom exits: short 'down → horizontal → down'.
+      Each sibling gets a slightly different horizontal band (y_mid).
+
+    - Side exits: short 'side → down → side'.
+      Each sibling gets a slightly different outward x_clear.
+
+    Goal: keep paths short and monotonic; reduce coincident segments.
     """
 
-    # A small vertical drop below the parent's exit point
-    y_down = y1 + vertical_clearance
+    bottom_y = sy + sh
+    left_x   = sx
+    right_x  = sx + sw
 
-    # Horizontal target is the child's entry x
-    lane_x = x2
+    # Which face are we closest to?
+    dist_bottom = abs(y1 - bottom_y)
+    dist_left   = abs(x1 - left_x)
+    dist_right  = abs(x1 - right_x)
 
-    # If child's x is too close to parent center, push outward slightly
-    parent_center = sx + sw / 2
-    if abs(lane_x - parent_center) < horizontal_clearance:
-        # Spread siblings outward based on index
-        mid = (total - 1) / 2
-        lane_x = parent_center + (idx - mid) * horizontal_clearance
+    is_bottom_exit = dist_bottom <= min(dist_left, dist_right) + 1e-3
 
-    # Construct Manhattan routing:
+    # Small per-sibling offset: centered around 0
+    if total > 1:
+        mid = (total - 1) / 2.0
+        sib_offset = (idx - mid) * lane_spacing
+    else:
+        sib_offset = 0.0
+
+    # ------------------------------------------------------------
+    # CASE 1: Bottom exit → down → horizontal → down
+    # ------------------------------------------------------------
+    if is_bottom_exit:
+        # Single horizontal band between parent and child, slightly shifted per sibling
+        base_mid = (y1 + y2) / 2.0
+        y_mid = base_mid + sib_offset  # tiny vertical separation for siblings
+
+        # Keep y_mid between y1 and y2 so we don't bend upwards or overshoot
+        y_min, y_max = sorted((y1, y2))
+        y_mid = max(y_min + gap, min(y_max - gap, y_mid))
+
+        return (
+            f"M{x1},{y1} "
+            f"L{x1},{y_mid} "
+            f"L{x2},{y_mid} "
+            f"L{x2},{y2}"
+        )
+
+    # ------------------------------------------------------------
+    # CASE 2: Side exit → side → down → side
+    # ------------------------------------------------------------
+
+    # Determine side: left or right
+    if dist_left < dist_right:
+        side_dir = -1  # exiting from left side
+    else:
+        side_dir = +1  # exiting from right side
+
+    # Step 1: a short horizontal move *away* from the box.
+    # Use sib_offset to spread siblings side-by-side.
+    x_clear = x1 + side_dir * (gap + abs(sib_offset))
+
+    # Step 2: vertical mid-band between y1 and y2 (no loops)
+    base_mid = (y1 + y2) / 2.0
+    y_mid = base_mid  # we could add tiny per-sibling tweak if needed
+
+    # Ensure we don't bend upwards past start/target
+    y_min, y_max = sorted((y1, y2))
+    y_mid = max(y_min + gap, min(y_max - gap, y_mid))
+
     return (
         f"M{x1},{y1} "
-        f"L{x1},{y_down} "
-        f"L{lane_x},{y_down} "
-        f"L{lane_x},{y2} "
+        f"L{x_clear},{y1} "
+        f"L{x_clear},{y_mid} "
+        f"L{x2},{y_mid} "
         f"L{x2},{y2}"
     )
-
 
 
 def _place_straight_edge_label(
@@ -827,172 +875,6 @@ def render_svg_string(
         for c in classes
     }
     placed_label_boxes = []
-
-    # --------------------------------------------------
-    # Edges
-    # --------------------------------------------------
-    for r in relations:
-        if r.source not in layout or r.target not in layout:
-            continue
-
-        s = layout[r.source]
-        t = layout[r.target]
-
-        sx, sy, sw, sh = s['x'], s['y'], s['width'], s['height']
-        tx, ty, tw, th = t['x'], t['y'], t['width'], t['height']
-
-        siblings = children[r.source]
-        sibs = sorted(
-            siblings,
-            key=lambda name: layout[name]['x'] + layout[name]['width'] / 2
-        )
-        idx = sibs.index(r.target)
-        num = len(sibs)
-
-        # NEW: label vertical offset
-        if num > 1:
-            # Spread labels evenly between source bottom and children top
-            source_bottom = sy + sh
-            children_top = min(layout[ch]['y'] for ch in siblings)
-            span = children_top - source_bottom
-
-            # linear spacing with margin
-            label_y_offset = source_bottom + (span / (num + 1)) * (idx + 1)
-        else:
-            label_y_offset = None  # default behavior
-
-        # exit point
-        x1, y1 = _compute_exit_point(sx, sy, sw, sh, idx, len(siblings))
-
-        # entry: align horizontally with exit
-        ideal_x2 = x1
-        x2 = max(tx + 4, min(tx + tw - 4, ideal_x2))
-        y2 = ty
-
-        # --------------------------------------------
-        # UML arrowhead logic (canonical)
-        # --------------------------------------------
-        kind = (r.kind or "association").lower()
-        marker_start = None
-        marker_end   = None
-
-        if kind == "inheritance":
-            marker_end = "inheritance"
-
-        elif kind == "realization":
-            marker_end = "realization"
-
-        elif kind == "composition":
-            marker_start = "composition"
-
-        elif kind == "aggregation":
-            marker_start = "aggregation"
-
-        elif kind == "dependency":
-            marker_end = "dependency"
-
-        elif kind == "directed-association":
-            marker_end = "association"
-
-        elif kind == "association":
-            pass
-
-        elif kind == "link":
-            pass
-
-        else:
-            pass
-
-        # attach CSS class
-        edge_kind_class = f"edge-kind-{kind}"
-
-        parts.append(
-            f'<g class="edge-group {edge_kind_class} collapsible-visible" '
-            f'data-source="{r.source}" data-target="{r.target}">'
-        )
-
-        ms = f' marker-start="url(#{marker_start})"' if marker_start else ""
-        me = f' marker-end="url(#{marker_end})"'     if marker_end   else ""
-
-        is_straight = abs(x1 - (sx + sw / 2)) < 1.0
-
-        use_ortho = edge_style == "orthogonal"
-
-        if is_straight:
-            # straight vertical line
-            parts.append(
-                f'<line class="edge-line" x1="{x1}" y1="{y1}" '
-                f'x2="{x2}" y2="{y2}"{ms}{me} />'
-            )
-        elif use_ortho:
-            d = _orthogonal_path_lanes(
-                x1, y1, x2, y2,
-                sx, sy, sw, sh,
-                idx, num,
-            )
-            parts.append(f'<path class="edge-line" d="{d}" fill="none"{ms}{me} />')
-        else:  # use_bezier
-            d = _bezier_vertical(x1, y1, x2, y2, 40)
-            parts.append(f'<path class="edge-line" d="{d}" fill="none"{ms}{me} />')
-
-        # Edge label (unchanged)
-        if r.label:
-            lines = r.label.split("\n")
-            if label_y_offset:
-                # override cy and place at fixed vertical band
-                cy_override = label_y_offset
-            else:
-                cy_override = None
-            cx, cy = _place_straight_edge_label(
-                x1, y1, x2, y2,
-                (sx, sy, sw, sh),
-                (tx, ty, tw, th),
-                lines,
-                char_width,
-                font_size,
-                node_boxes,
-                placed_label_boxes,
-                margin,
-                forced_cy=cy_override,
-            )
-
-            fs = font_size - 2
-            lh = fs
-            parts.append(
-                f'<text class="edge-label" x="{cx}" y="{cy}" '
-                f'text-anchor="middle" font-size="{fs}">'
-            )
-            parts.append(html.escape(lines[0]))
-            for line in lines[1:]:
-                parts.append(f'<tspan x="{cx}" dy="{lh}">{html.escape(line)}</tspan>')
-            parts.append('</text>')
-
-        # multiplicities (unchanged)
-        if r.source_multiplicity:
-            eps = 1e-3
-            msy = sy + sh/2
-            sl, sr = sx, sx+sw
-            if abs(x1 - sl) < eps and abs(y1 - msy) < eps:
-                mx = x1 - 12; my = y1
-            elif abs(x1 - sr) < eps and abs(y1 - msy) < eps:
-                mx = x1 + 12; my = y1
-            else:
-                mx = x1 + 5; my = y1 + 12
-            parts.append(
-                f'<text class="edge-label" x="{mx}" y="{my}" '
-                f'font-size="{font_size-2}">{html.escape(r.source_multiplicity)}</text>'
-            )
-
-        if r.target_multiplicity:
-            mx = x2 + 6
-            my = ty - 6
-            parts.append(
-                f'<text class="edge-label" x="{mx}" y="{my}" '
-                f'font-size="{font_size-2}">{html.escape(r.target_multiplicity)}</text>'
-            )
-
-        parts.append("</g>")  # close edge-group
-
     # --------------------------------------------------
     # Nodes
     # --------------------------------------------------
@@ -1100,6 +982,195 @@ def render_svg_string(
             cy += line_height
 
         parts.append("</g>")  # end class group
+    # --------------------------------------------------
+    # Edges
+    # --------------------------------------------------
+    for r in relations:
+        if r.source not in layout or r.target not in layout:
+            continue
+
+        s = layout[r.source]
+        t = layout[r.target]
+
+        sx, sy, sw, sh = s['x'], s['y'], s['width'], s['height']
+        tx, ty, tw, th = t['x'], t['y'], t['width'], t['height']
+
+        # Sibling ordering
+        siblings = children[r.source]
+        sibs = sorted(
+            siblings,
+            key=lambda name: layout[name]['x'] + layout[name]['width'] / 2
+        )
+        idx = sibs.index(r.target)
+        num = len(sibs)
+
+        # NEW: label vertical offset between children (unchanged)
+        if num > 1:
+            source_bottom = sy + sh
+            children_top = min(layout[ch]['y'] for ch in siblings)
+            span = children_top - source_bottom
+            label_y_offset = source_bottom + (span / (num + 1)) * (idx + 1)
+        else:
+            label_y_offset = None
+
+        # --------------------------------------------------
+        # Compute exit point
+        # --------------------------------------------------
+        x1, y1 = _compute_exit_point(sx, sy, sw, sh, idx, num)
+
+        # Preserve original point for multiplicities
+        orig_x1, orig_y1 = x1, y1
+
+        # --------------------------------------------------
+        # UML arrowhead logic (including diamond handling)
+        # --------------------------------------------------
+        kind = (r.kind or "association").lower()
+        marker_start = None
+        marker_end   = None
+
+        if kind == "inheritance":
+            marker_end = "inheritance"
+
+        elif kind == "realization":
+            marker_end = "realization"
+
+        elif kind == "composition":
+            marker_start = "composition"
+
+        elif kind == "aggregation":
+            marker_start = "aggregation"
+
+        elif kind == "dependency":
+            marker_end = "dependency"
+
+        elif kind == "directed-association":
+            marker_end = "association"
+
+        # everything else: no markers
+
+        # --------------------------------------------------
+        # Nudge start point outward for start markers (diamonds)
+        # --------------------------------------------------
+        if marker_start:
+            # vector from box center to exit point
+            cx = sx + sw / 2
+            cy = sy + sh / 2
+            vx = x1 - cx
+            vy = y1 - cy
+            L = (vx * vx + vy * vy)**0.5 or 1.0
+
+            OUTSET = 12.0  # diamond offset distance
+
+            x1 = x1 + (vx / L) * OUTSET
+            y1 = y1 + (vy / L) * OUTSET
+
+        # --------------------------------------------------
+        # Compute entry point into target (x2 is clamped to box)
+        # --------------------------------------------------
+        ideal_x2 = x1
+        x2 = max(tx + 4, min(tx + tw - 4, ideal_x2))
+        y2 = ty
+
+        # --------------------------------------------------
+        # Open edge-group
+        # --------------------------------------------------
+        edge_kind_class = f"edge-kind-{kind}"
+        parts.append(
+            f'<g class="edge-group {edge_kind_class} collapsible-visible" '
+            f'data-source="{r.source}" data-target="{r.target}">'
+        )
+
+        # Marker attributes
+        ms = f' marker-start="url(#{marker_start})"' if marker_start else ""
+        me = f' marker-end="url(#{marker_end})"'     if marker_end   else ""
+
+        # Straight vs orthogonal vs bezier
+        use_ortho = edge_style == "orthogonal"
+        is_straight = abs(x1 - (sx + sw / 2)) < 1.0
+
+        if is_straight:
+            # vertical straight edge
+            parts.append(
+                f'<line class="edge-line" x1="{x1}" y1="{y1}" '
+                f'x2="{x2}" y2="{y2}"{ms}{me} />'
+            )
+
+        elif use_ortho:
+            d = _orthogonal_path_lanes(
+                x1, y1, x2, y2,
+                sx, sy, sw, sh,
+                idx, num,
+            )
+            parts.append(
+                f'<path class="edge-line" d="{d}" fill="none"{ms}{me} />'
+            )
+
+        else:
+            d = _bezier_vertical(x1, y1, x2, y2, 40)
+            parts.append(
+                f'<path class="edge-line" d="{d}" fill="none"{ms}{me} />'
+            )
+
+        # --------------------------------------------------
+        # Edge label placement (unchanged)
+        # --------------------------------------------------
+        if r.label:
+            lines = r.label.split("\n")
+            cy_override = label_y_offset if label_y_offset else None
+
+            cx, cy = _place_straight_edge_label(
+                x1, y1, x2, y2,
+                (sx, sy, sw, sh),
+                (tx, ty, tw, th),
+                lines,
+                char_width,
+                font_size,
+                node_boxes,
+                placed_label_boxes,
+                margin,
+                forced_cy=cy_override,
+            )
+
+            fs = font_size - 2
+            lh = fs
+            parts.append(
+                f'<text class="edge-label" x="{cx}" y="{cy}" '
+                f'text-anchor="middle" font-size="{fs}">'
+            )
+            parts.append(html.escape(lines[0]))
+            for line in lines[1:]:
+                parts.append(f'<tspan x="{cx}" dy="{lh}">{html.escape(line)}</tspan>')
+            parts.append('</text>')
+
+        # --------------------------------------------------
+        # Multiplicities (must use original start point!)
+        # --------------------------------------------------
+        if r.source_multiplicity:
+            eps = 1e-3
+            msy = sy + sh/2
+            sl, sr = sx, sx+sw
+
+            if abs(orig_x1 - sl) < eps and abs(orig_y1 - msy) < eps:
+                mx = orig_x1 - 12; my = orig_y1
+            elif abs(orig_x1 - sr) < eps and abs(orig_y1 - msy) < eps:
+                mx = orig_x1 + 12; my = orig_y1
+            else:
+                mx = orig_x1 + 5; my = orig_y1 + 12
+
+            parts.append(
+                f'<text class="edge-label" x="{mx}" y="{my}" '
+                f'font-size="{font_size-2}">{html.escape(r.source_multiplicity)}</text>'
+            )
+
+        if r.target_multiplicity:
+            mx = x2 + 6
+            my = ty - 6
+            parts.append(
+                f'<text class="edge-label" x="{mx}" y="{my}" '
+                f'font-size="{font_size-2}">{html.escape(r.target_multiplicity)}</text>'
+            )
+
+        parts.append("</g>")  # close edge-group
     # --------------------------------------------------
     # Recompute width now that all labels are placed
     # --------------------------------------------------
