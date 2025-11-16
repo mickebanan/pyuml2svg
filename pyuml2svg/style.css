@@ -1,4 +1,10 @@
-.edge-line { stroke:#888; stroke-width:1; transition:stroke 0.15s, stroke-width 0.15s; }
+.edge-line {
+    stroke: #000;
+    stroke-width: 1;
+    fill: none;
+    transition: stroke 0.15s, stroke-width 0.15s;
+}
+
 .edge-label { fill:#888; transition:fill 0.15s, font-weight 0.15s; }
 
 .edge-group:hover .edge-label {
@@ -7,8 +13,25 @@
 
 .edge-group:hover .edge-line {
     stroke:#444;
-    stroke-width:2;
+    stroke-width: 1.5;
 }
+
+/* Kinds */
+
+.edge-kind-inheritance .edge-line,
+.edge-kind-realization .edge-line,
+.edge-kind-composition .edge-line,
+.edge-kind-aggregation .edge-line,
+.edge-kind-dependency .edge-line {
+    stroke: #000;
+}
+
+.edge-kind-realization .edge-line,
+.edge-kind-dependency .edge-line {
+    stroke-dasharray: 5, 4;
+}
+
+/* link: leave as default .edge-line (solid, grey) */
 
 .uml-class { cursor: pointer; }
 

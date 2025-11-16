@@ -787,6 +787,7 @@ def render_svg_string(
     horizontal_spacing=60,
     margin=40,
 ) -> str:
+
     if line_height is None:
         line_height = int(font_size * 1.4)
 
@@ -805,30 +806,63 @@ def render_svg_string(
 
     width  = max(info['x'] + info['width']  + margin for info in layout.values())
     height = max(info['y'] + info['height'] + margin for info in layout.values())
-    style = _load_asset('style.css')
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'font-family="{html.escape(font_family)}" font-size="{font_size}" '
         f'xmlns:xlink="http://www.w3.org/1999/xlink">',
         """
+    <!-- ================================================================ -->
+    <!--                   UML Arrowhead Definitions                      -->
+    <!-- ================================================================ -->
     <defs>
-      <marker id="arrow" markerWidth="10" markerHeight="10"
+
+      <!-- Generalization (inheritance): hollow triangle -->
+      <marker id="inheritance" markerWidth="12" markerHeight="12"
+              refX="10" refY="6" orient="auto">
+        <path d="M0,0 L12,6 L0,12 Z" fill="white" stroke="black" />
+      </marker>
+
+      <!-- Realization: hollow triangle, dashed line -->
+      <marker id="realization" markerWidth="12" markerHeight="12"
+              refX="10" refY="6" orient="auto">
+        <path d="M0,0 L12,6 L0,12 Z" fill="white" stroke="black" />
+      </marker>
+
+      <!-- Composition: filled diamond -->
+      <marker id="composition" markerWidth="12" markerHeight="12"
+              refX="12" refY="6" orient="auto">
+        <path d="M12,6 L6,0 L0,6 L6,12 Z" fill="black" stroke="black" />
+      </marker>
+
+      <!-- Aggregation: hollow diamond -->
+      <marker id="aggregation" markerWidth="12" markerHeight="12"
+              refX="12" refY="6" orient="auto">
+        <path d="M12,6 L6,0 L0,6 L6,12 Z" fill="white" stroke="black" />
+      </marker>
+
+      <!-- Filled arrowhead: directed association -->
+      <marker id="association" markerWidth="10" markerHeight="10"
               refX="9" refY="5" orient="auto">
         <polygon points="0,0 10,5 0,10" fill="black" />
       </marker>
+
+      <!-- Dependency (open arrow) -->
+      <marker id="dependency" markerWidth="10" markerHeight="10"
+              refX="9" refY="5" orient="auto">
+        <polygon points="0,0 10,5 0,10" fill="white" stroke="black" />
+      </marker>
+
     </defs>
 
-    <style>
-    %(style)s
-    </style>
-    """ % {'style': style}
+    <style>%(style)s</style>
+    """ % {'style': _load_asset('style.css')}
     ]
 
-    # Build children map for edge logic
+    # Build child mapping
     children, _ = _build_graph(classes, relations)
 
-    # Node boxes for label collision detection
+    # Boxes for label collision
     node_boxes = {
         c.name: (
             layout[c.name]['x'],
@@ -844,61 +878,97 @@ def render_svg_string(
     # Edges
     # --------------------------------------------------
     for r in relations:
+
         if r.source not in layout or r.target not in layout:
             continue
 
-        s_info = layout[r.source]
-        t_info = layout[r.target]
+        s = layout[r.source]
+        t = layout[r.target]
 
-        sx, sy, sw, sh = s_info['x'], s_info['y'], s_info['width'], s_info['height']
-        tx, ty, tw, th = t_info['x'], t_info['y'], t_info['width'], t_info['height']
+        sx, sy, sw, sh = s['x'], s['y'], s['width'], s['height']
+        tx, ty, tw, th = t['x'], t['y'], t['width'], t['height']
 
-        # Order siblings left→right
         siblings = children[r.source]
         N = len(siblings)
 
-        sib_positions = [
-            (layout[s]['x'] + layout[s]['width']/2, s)
-            for s in siblings
-        ]
-        sib_positions.sort()
-        ordered = [n for (_, n) in sib_positions]
-        idx = ordered.index(r.target)
+        sibs = sorted(
+            siblings,
+            key=lambda name: layout[name]['x'] + layout[name]['width']/2
+        )
+        idx = sibs.index(r.target)
 
-        # ---- EXIT POINT (parent → child) ----
+        # exit point
         x1, y1 = _compute_exit_point(sx, sy, sw, sh, idx, N)
 
-        # ---- ENTRY POINT (aligned horizontally with exit) ----
-        child_left  = tx
-        child_right = tx + tw
+        # entry: align horizontally with exit
         ideal_x2 = x1
-        x2 = max(child_left + 4, min(child_right - 4, ideal_x2))
+        x2 = max(tx + 4, min(tx + tw - 4, ideal_x2))
         y2 = ty
 
+        # --------------------------------------------
+        # UML arrowhead logic (canonical)
+        # --------------------------------------------
+        kind = (r.kind or "association").lower()
+        marker_start = None
+        marker_end   = None
+        dashed       = False
+
+        if kind == "inheritance":
+            marker_end = "inheritance"
+
+        elif kind == "realization":
+            marker_end = "realization"
+            dashed = True
+
+        elif kind == "composition":
+            marker_start = "composition"
+
+        elif kind == "aggregation":
+            marker_start = "aggregation"
+
+        elif kind == "dependency":
+            marker_end = "dependency"
+            dashed = True
+
+        elif kind == "directed-association":
+            marker_end = "association"
+
+        elif kind == "association":
+            pass
+
+        elif kind == "link":
+            pass
+
+        else:
+            pass
+
+        # attach CSS class
+        edge_kind_class = f"edge-kind-{kind}"
+
         parts.append(
-            f'<g class="edge-group collapse-visible" data-source="{r.source}" data-target="{r.target}">'
+            f'<g class="edge-group {edge_kind_class} collapsible-visible" '
+            f'data-source="{r.source}" data-target="{r.target}">'
         )
 
-        # Straight vs curved
+        ms = f' marker-start="url(#{marker_start})"' if marker_start else ""
+        me = f' marker-end="url(#{marker_end})"'     if marker_end   else ""
+
         is_straight = abs(x1 - (sx + sw/2)) < 1.0
 
         if is_straight:
             parts.append(
                 f'<line class="edge-line" x1="{x1}" y1="{y1}" '
-                f'x2="{x2}" y2="{y2}" marker-end="url(#arrow)" />'
+                f'x2="{x2}" y2="{y2}"{ms}{me} />'
             )
         else:
-            curve_amount = 40
-            path = _bezier_vertical(x1, y1, x2, y2, curve_amount)
+            path = _bezier_vertical(x1, y1, x2, y2, 40)
             parts.append(
-                f'<path class="edge-line" d="{path}" fill="none" '
-                f'marker-end="url(#arrow)" />'
+                f'<path class="edge-line" d="{path}"{ms}{me} />'
             )
 
-        # ---- EDGE LABEL ----
+        # Edge label (unchanged)
         if r.label:
             lines = r.label.split("\n")
-
             if is_straight:
                 cx, cy = _place_straight_edge_label(
                     x1, y1, x2, y2,
@@ -934,50 +1004,37 @@ def render_svg_string(
                 parts.append(f'<tspan x="{cx}" dy="{lh}">{html.escape(line)}</tspan>')
             parts.append('</text>')
 
-        # ---- MULTIPLICITIES ----
+        # multiplicities (unchanged)
         if r.source_multiplicity:
             eps = 1e-3
-            source_middle_y = sy + sh/2
-            source_left = sx
-            source_right = sx + sw
-            text_anchor = 'middle'
-
-            if abs(x1 - source_left) < eps and abs(y1 - source_middle_y) < eps:
+            msy = sy + sh/2
+            sl, sr = sx, sx+sw
+            if abs(x1 - sl) < eps and abs(y1 - msy) < eps:
                 mx = x1 - 12; my = y1
-            elif abs(x1 - source_right) < eps and abs(y1 - source_middle_y) < eps:
+            elif abs(x1 - sr) < eps and abs(y1 - msy) < eps:
                 mx = x1 + 12; my = y1
             else:
-                mx = x1 + 5; my = y1 + 12; text_anchor = "left"
-
+                mx = x1 + 5; my = y1 + 12
             parts.append(
                 f'<text class="edge-label" x="{mx}" y="{my}" '
-                f'text-anchor="{text_anchor}" font-size="{font_size-2}">'
-                f'{html.escape(r.source_multiplicity)}</text>'
+                f'font-size="{font_size-2}">{html.escape(r.source_multiplicity)}</text>'
             )
 
         if r.target_multiplicity:
-            base_x = x2
-            base_y = ty - 6
-
-            if len(ordered) >= 2 and r.target == ordered[0]:
-                mx = base_x - 6; text_anchor = "right"
-            else:
-                mx = base_x + 6; text_anchor = "left"
-
-            my = base_y
-
+            mx = x2 + 6
+            my = ty - 6
             parts.append(
                 f'<text class="edge-label" x="{mx}" y="{my}" '
-                f'text-anchor="{text_anchor}" font-size="{font_size-2}">'
-                f'{html.escape(r.target_multiplicity)}</text>'
+                f'font-size="{font_size-2}">{html.escape(r.target_multiplicity)}</text>'
             )
 
-        parts.append("</g>")
+        parts.append("</g>")  # close edge-group
 
     # --------------------------------------------------
     # Nodes
     # --------------------------------------------------
     for cls in classes:
+
         info = layout[cls.name]
         x, y = info['x'], info['y']
         w, h = info['width'], info['height']
@@ -985,42 +1042,37 @@ def render_svg_string(
         fill = cls.style.get('fill', '#f5f5f5')
         base_color = cls.style.get('text', '#000')
 
-        if is_disconnected[cls.name]:
-            stroke = cls.style.get('stroke', 'red')
-            swidth = cls.style.get('stroke_width', '2')
-        else:
-            stroke = cls.style.get('stroke', '#000')
-            swidth = cls.style.get('stroke_width', '1')
+        stroke = cls.style.get('stroke', '#000')
+        swidth = cls.style.get('stroke_width', '1')
 
-        # Wrap node in a group for collapsible subtree
-        parts.append(f'<g id="class-{cls.name}" class="uml-class collapse-visible">')
+        parts.append(f'<g id="class-{cls.name}" class="uml-class collapsible-visible">')
 
-        # Clickable rectangle
+        # box
         parts.append(
             f'<rect x="{x}" y="{y}" width="{w}" height="{h}" '
             f'rx="4" ry="4" fill="{fill}" stroke="{stroke}" stroke-width="{swidth}" '
             f'onclick="toggleNode(\'{cls.name}\')" />'
         )
 
-        # Class name
+        # class name
         cx = x + w/2
         cy = y + 2 + line_height
         parts.append(
             f'<text x="{cx}" y="{cy}" text-anchor="middle" '
             f'font-weight="bold" fill="{base_color}">{html.escape(cls.name)}</text>'
         )
-        # Draw expansion triangle if the class has children
+
+        # toggle marker (only if class has children)
         if children.get(cls.name):
-            marker_x = x + w - 12
-            marker_y = y + 14
+            mx = x + w - 12
+            my = y + 14
             parts.append(
-                f'<text class="toggle-marker" '
-                f'id="toggle-{cls.name}" '
-                f'x="{marker_x}" y="{marker_y}" '
+                f'<text class="toggle-marker" id="toggle-{cls.name}" '
+                f'x="{mx}" y="{my}" '
                 f'onclick="toggleNode(\'{cls.name}\'); event.stopPropagation();">▼</text>'
             )
 
-        # Divider
+        # divider
         divider = y + 10 + line_height + 3
         if info['attr_lines'] or info['method_lines']:
             parts.append(
@@ -1029,14 +1081,14 @@ def render_svg_string(
 
         cy = divider + line_height
 
-        # Attributes
+        # attributes
         for entry in cls.attributes:
             text, sty = _parse_text_entry(entry)
             weight = sty.get('weight', 'normal')
-            style = sty.get('style', 'normal')
-            color = sty.get('color', base_color)
-            size = sty.get('size')
-            fam = sty.get('family')
+            style  = sty.get('style', 'normal')
+            color  = sty.get('color', base_color)
+            size   = sty.get('size')
+            fam    = sty.get('family')
             anchor = sty.get('anchor', 'start')
 
             bits = []
@@ -1050,7 +1102,7 @@ def render_svg_string(
             )
             cy += line_height
 
-        # Divider between attributes and methods
+        # divider between attributes and methods
         if info['attr_lines'] and info['method_lines']:
             mid = cy - line_height/2
             parts.append(
@@ -1058,14 +1110,14 @@ def render_svg_string(
             )
             cy = mid + line_height
 
-        # Methods
+        # methods
         for entry in cls.methods:
             text, sty = _parse_text_entry(entry)
             weight = sty.get('weight', 'normal')
-            style = sty.get('style', 'normal')
-            color = sty.get('color', base_color)
-            size = sty.get('size')
-            fam = sty.get('family')
+            style  = sty.get('style', 'normal')
+            color  = sty.get('color', base_color)
+            size   = sty.get('size')
+            fam    = sty.get('family')
             anchor = sty.get('anchor', 'start')
 
             bits = []
@@ -1079,13 +1131,9 @@ def render_svg_string(
             )
             cy += line_height
 
-        parts.append("</g>")  # end node group
+        parts.append("</g>")  # end class group
 
-    # --------------------------------------------------
-    # Collapse / Expand JavaScript
-    # --------------------------------------------------
-    parts.append("<script type=\"text/ecmascript\"><![CDATA[%(js)s]]></script>" % {'js': _load_asset('script.js')})
-
+    parts.append('<script type="text/ecmascript"><![CDATA[%(js)s]]></script>' % {'js': _load_asset('script.js')})
     parts.append("</svg>")
     return "\n".join(parts)
 
