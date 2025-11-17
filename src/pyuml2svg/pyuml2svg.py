@@ -631,116 +631,6 @@ def _place_straight_edge_label(
     return cx, cy
 
 
-def _place_curved_edge_label(
-    x1, y1, x2, y2,
-    curve_amount,
-    lines,
-    char_width,
-    font_size,
-    node_boxes,
-    placed_label_boxes,
-    margin,
-):
-    """
-    Improved curved-edge label placement:
-    - samples multiple t positions along the curve
-    - chooses left or right normal based on available space
-    - pushes outward until a free spot is found
-    - clamps so the label does not spill left of `margin`
-    """
-
-    # --- curve geometry (must match _bezier_vertical) ---
-    mid_y = (y1 + y2) / 2
-    cx_ctrl = (x1 + x2) / 2
-    cy_ctrl = mid_y - curve_amount
-
-    def bezier_point(t: float):
-        """Quadratic Bezier point at parameter t."""
-        u = 1.0 - t
-        bx = u * u * x1 + 2 * u * t * cx_ctrl + t * t * x2
-        by = u * u * y1 + 2 * u * t * cy_ctrl + t * t * y2
-        return bx, by
-
-    def bezier_tangent(t: float):
-        """Unit tangent of quadratic Bezier at parameter t."""
-        # derivative of quadratic Bezier:
-        tx = 2 * (1 - t) * (cx_ctrl - x1) + 2 * t * (x2 - cx_ctrl)
-        ty = 2 * (1 - t) * (cy_ctrl - y1) + 2 * t * (y2 - cy_ctrl)
-        L = (tx * tx + ty * ty) ** 0.5 or 1.0
-        return tx / L, ty / L
-
-    # --- label size ---
-    fs = font_size - 2
-    lh = fs
-    max_chars = max(len(line) for line in lines) if lines else 0
-    lw = max_chars * char_width
-    lh_total = lh * max(1, len(lines))
-
-    # --- candidate t positions along the curve ---
-    t_candidates = [0.35, 0.5, 0.65]
-
-    best = None
-    best_penalty = float("inf")
-
-    for t in t_candidates:
-        bx, by = bezier_point(t)
-        txn, tyn = bezier_tangent(t)
-
-        # left & right normals for a unit tangent
-        # (rotate 90° CCW / CW)
-        left_normal  = (-tyn, txn)
-        right_normal = ( tyn, -txn)
-
-        for nx, ny in (left_normal, right_normal):
-            offset = 20.0
-            for _ in range(30):
-                cx = bx + nx * offset
-                cy = by + ny * offset
-
-                # clamp so label doesn't spill left of margin
-                if lw > 0 and cx - lw / 2 < margin:
-                    cx = margin + lw / 2
-
-                label_box = (
-                    cx - lw / 2,
-                    cy - lh_total / 2,
-                    cx + lw / 2,
-                    cy + lh_total / 2,
-                )
-
-                if (
-                    not _boxes_collide(label_box, node_boxes.values())
-                    and not _boxes_collide(label_box, placed_label_boxes)
-                ):
-                    # simple penalty: prefer smaller offset and t near 0.5
-                    penalty = offset + abs(t - 0.5) * 20.0
-                    if penalty < best_penalty:
-                        best_penalty = penalty
-                        best = (cx, cy, label_box)
-                    break
-
-                offset += 8.0
-
-    # Fallback: sit on the curve midpoint if nothing worked
-    if best is None:
-        t = 0.5
-        bx, by = bezier_point(t)
-        cx, cy = bx, by
-        if lw > 0 and cx - lw / 2 < margin:
-            cx = margin + lw / 2
-        label_box = (
-            cx - lw / 2,
-            cy - lh_total / 2,
-            cx + lw / 2,
-            cy + lh_total / 2,
-        )
-        best = (cx, cy, label_box)
-
-    cx, cy, box = best
-    placed_label_boxes.append(box)
-    return cx, cy
-
-
 def _compute_label_vertical_gaps(relations, depths, font_size):
     """
     Compute extra vertical gap needed between depth d and d+1
@@ -1178,7 +1068,6 @@ def render_svg_string(
     node_right = max(info['x'] + info['width'] for info in layout.values())
     label_right = max((box[2] for box in placed_label_boxes), default=0)
     width = max(node_right, label_right) + margin
-    parts[0] %= {'width': width}
 
     svg_open = (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
