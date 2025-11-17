@@ -12,7 +12,7 @@ Features:
 - Grey edges & labels with hover highlighting.
 """
 from dataclasses import dataclass, field
-from importlib.resources import files
+from importlib import resources
 from typing import List, Dict
 import html
 
@@ -134,7 +134,9 @@ def _compute_depths(roots, children, names):
 
 
 def _load_asset(filename):
-    return (files('pyuml2svg.assets') / filename).read_text(encoding='utf-8')
+    with resources.path('pyuml2svg.assets', filename) as path:
+        with open(path, 'r') as f:
+            return f.read()
 
 
 def _layout_tree(
